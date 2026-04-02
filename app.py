@@ -8,7 +8,7 @@ import time
 import streamlit as st
 from dotenv import load_dotenv
 from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_watched_set
-from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster
+from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
 from recommender import get_recommendations, parse_rec_blocks
 from db import sign_in, sign_up, sign_out, load_profile, save_profile
 
@@ -286,8 +286,14 @@ def run_recommendations(query: str, loader_slot):
             taste_profile=st.session_state.taste_profile,
             imdb_summary=st.session_state.imdb_summary,
             watched_set=watched_set,
+            conversation_history=st.session_state.get("chat_history") or None,
             api_key=GEMINI_KEY,
         )
+        # Append this exchange to chat history
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+        st.session_state.chat_history.append({"role": "user",      "content": query.strip()})
+        st.session_state.chat_history.append({"role": "assistant", "content": recs})
         st.session_state.recommendations = recs
         st.session_state.replaced        = replaced
     except Exception as e:
@@ -574,7 +580,10 @@ left, right = st.columns([2, 3], gap="large")
 loader_slot = right.empty()
 
 with left:
-    st.markdown('<p class="label">What are you looking for?</p>', unsafe_allow_html=True)
+    if st.session_state.get("chat_history"):
+        st.markdown('<p class="label">Anything else you want me to consider?</p>', unsafe_allow_html=True)
+    else:
+        st.markdown('<p class="label">What are you looking for?</p>', unsafe_allow_html=True)
 
     query = st.text_area(
         "query",
@@ -589,13 +598,30 @@ with left:
         key="query_box",
     )
 
-    go = st.button("🎬  Get Recommendations")
+    in_convo = bool(st.session_state.get("chat_history"))
 
-    if go and query.strip():
-        st.session_state.pending_query = ""
-        st.session_state.auto_run      = False
-        run_recommendations(query, loader_slot)
-        st.rerun()
+    if in_convo:
+        ecol1, ecol2 = st.columns([2, 1])
+        with ecol1:
+            if st.button("↩  Enter", key="enter_followup"):
+                if query.strip():
+                    st.session_state.pending_query = ""
+                    st.session_state.auto_run      = False
+                    run_recommendations(query, loader_slot)
+                    st.rerun()
+        with ecol2:
+            if st.button("✕  Start Over", key="start_over"):
+                st.session_state.recommendations = None
+                st.session_state.replaced        = []
+                st.session_state["chat_history"] = []
+                st.rerun()
+    else:
+        go = st.button("🎬  Get Recommendations", key="get_recs")
+        if go and query.strip():
+            st.session_state.pending_query = ""
+            st.session_state.auto_run      = False
+            run_recommendations(query, loader_slot)
+            st.rerun()
 
     st.markdown("---")
 
@@ -635,11 +661,31 @@ with right:
 
     if st.session_state.recommendations:
         blocks, taste_note = parse_rec_blocks(st.session_state.recommendations)
+
+        # Conversation history: show prior queries as collapsed pills
+        history = st.session_state.get("chat_history", [])
+        prior_queries = [m["content"] for m in history if m["role"] == "user"][:-1]
+        if prior_queries:
+            st.markdown(
+                '<p style="font-size:0.72rem;color:#555;margin-bottom:4px">Previous queries:</p>',
+                unsafe_allow_html=True,
+            )
+            pills = " ".join(
+                f'<span style="background:#1a1a20;border:1px solid #2c2c38;border-radius:3px;'
+                f'padding:2px 8px;font-size:0.72rem;color:#888;margin:2px;display:inline-block">{q}</span>'
+                for q in prior_queries
+            )
+            st.markdown(pills, unsafe_allow_html=True)
+            st.markdown("<hr style='border-color:#1e1e26;margin:0.5rem 0'>", unsafe_allow_html=True)
+
         for block in blocks:
             try:
-                poster_url = fetch_poster(block["title"], block["year"], TMDB_TOKEN)
+                result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_TOKEN)
+                poster_url = result["poster_url"]
+                providers  = result["providers"]
             except Exception:
                 poster_url = None
+                providers  = []
             col_img, col_text = st.columns([1, 4], gap="medium")
             with col_img:
                 if poster_url:
@@ -654,6 +700,18 @@ with right:
                         'justify-content:center;color:#444;font-size:1.5rem;">🎬</div>',
                         unsafe_allow_html=True,
                     )
+                # Streaming provider logos
+                if providers:
+                    logos_html = "".join(
+                        f'<img src="{p["logo_url"]}" title="{p["name"]}" '
+                        f'style="width:24px;height:24px;border-radius:4px;margin:2px" />' if p["logo_url"]
+                        else f'<span style="font-size:0.65rem;color:#888">{p["name"]}</span>'
+                        for p in providers[:6]
+                    )
+                    st.markdown(
+                        f'<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:2px">{logos_html}</div>',
+                        unsafe_allow_html=True,
+                    )
             with col_text:
                 st.markdown(block["body"])
             st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0'>",
@@ -663,11 +721,7 @@ with right:
             replaced_str = ", ".join(t.title() for t in st.session_state.replaced)
             st.info(f"♻️ Replaced already-seen film(s): {replaced_str}")
 
-        st.markdown("---")
-        if st.button("↺  Clear"):
-            st.session_state.recommendations = None
-            st.session_state.replaced = []
-            st.rerun()
+
     else:
         st.markdown("""
         <div class="recs-empty">
@@ -676,3 +730,10 @@ with right:
           then hit <strong>Get Recommendations</strong>.</p>
         </div>
         """, unsafe_allow_html=True)
+
+if st.session_state.taste_profile:
+    with st.expander("📄 View taste profile sent to Gemini"):
+        st.code(st.session_state.taste_profile, language=None)
+if st.session_state.imdb_summary:
+    with st.expander("🎞️ TMDB metadata summary"):
+        st.code(st.session_state.imdb_summary, language=None)
