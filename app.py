@@ -12,8 +12,8 @@ from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_post
 from recommender import get_recommendations, parse_rec_blocks
 
 load_dotenv()
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-TMDB_TOKEN = os.environ.get("TMDB_READ_TOKEN", "")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+TMDB_TOKEN = os.environ.get("TMDB_READ_TOKEN") or st.secrets.get("TMDB_READ_TOKEN", "")
 
 missing = [k for k, v in {"GEMINI_API_KEY": GEMINI_KEY, "TMDB_READ_TOKEN": TMDB_TOKEN}.items() if not v]
 if missing:
