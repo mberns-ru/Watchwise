@@ -12,8 +12,8 @@ from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_post
 from recommender import get_recommendations, parse_rec_blocks
 
 load_dotenv()
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
-TMDB_TOKEN = os.environ.get("TMDB_READ_TOKEN") or st.secrets.get("TMDB_READ_TOKEN", "")
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+TMDB_TOKEN = os.environ.get("TMDB_READ_TOKEN", "")
 
 missing = [k for k, v in {"GEMINI_API_KEY": GEMINI_KEY, "TMDB_READ_TOKEN": TMDB_TOKEN}.items() if not v]
 if missing:
@@ -282,7 +282,7 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 if not st.session_state.zip_loaded:
     with st.expander("📦  Upload your Letterboxd Export", expanded=False):
-        st.caption("letterboxd.com → Settings → Import & Export → Export Your Data")
+        st.caption("Export your data at [letterboxd.com/data/export](https://letterboxd.com/data/export/) — or via Settings → Import & Export → Export Your Data")
         uploaded_zip = st.file_uploader("ZIP", type=["zip"], label_visibility="collapsed")
         load_btn = st.button("⚙️  Parse & Enrich Profile")
 
@@ -408,6 +408,15 @@ with left:
         if taste_note:
             st.markdown(taste_note)
     else:
+        # On mobile, hide examples once any query has been entered
+        if st.session_state.recommendations:
+            st.markdown("""
+            <style>
+            @media (max-width: 768px) { .examples-block { display: none !important; } }
+            </style>
+            """, unsafe_allow_html=True)
+
+        st.markdown('<div class="examples-block">', unsafe_allow_html=True)
         st.markdown('<p class="label" style="font-size:0.75rem">Quick examples</p>', unsafe_allow_html=True)
         cols = st.columns(2)
         for i, ex in enumerate(EXAMPLES):
@@ -418,6 +427,7 @@ with left:
                     st.session_state.auto_run      = True
                     st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 # Auto-run from example click
 if st.session_state.auto_run and st.session_state.pending_query:
@@ -442,7 +452,10 @@ with right:
             col_img, col_text = st.columns([1, 4], gap="medium")
             with col_img:
                 if poster_url:
-                    st.image(poster_url, use_container_width=True)
+                    st.markdown(
+                        f'<img src="{poster_url}" style="width:100%;border-radius:4px;">',
+                        unsafe_allow_html=True,
+                    )
                 else:
                     st.markdown(
                         '<div style="background:#1e1e26;border-radius:4px;'

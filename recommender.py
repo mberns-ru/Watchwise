@@ -48,12 +48,12 @@ def parse_rec_blocks(text: str) -> tuple[list[dict], str]:
     if blocks:
         last = blocks[-1]
         taste_match = re.search(
-            r'\n\n(\*{0,2}Taste note[:\*].*)',
+            r'\n\n\*{0,2}Taste note\*{0,2}[:\s]+(.+)',
             last["body"], re.DOTALL | re.IGNORECASE
         )
         if taste_match:
             blocks[-1]["body"] = last["body"][:taste_match.start()].strip()
-            taste_note = taste_match.group(1).strip().lstrip("*").rstrip("*").strip()
+            taste_note = "Taste note: " + taste_match.group(1).strip()
 
     return blocks, taste_note
 
