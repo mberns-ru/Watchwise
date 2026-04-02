@@ -50,7 +50,6 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stSidebarCollapsedControl"] { display: none !important; }
 #MainMenu, footer, header { visibility: hidden; }
 
-/* ── Text legibility ── */
 [data-testid="stMarkdownContainer"] p,
 [data-testid="stMarkdownContainer"] li,
 [data-testid="stMarkdownContainer"] ol,
@@ -61,7 +60,6 @@ html, body, [data-testid="stAppViewContainer"] {
 p, li, label { color: #e8e2d8; }
 h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 
-/* ── Inputs ── */
 .stTextArea textarea, .stTextInput input {
     background: #1a1a20 !important; color: #e8e2d8 !important;
     border: 1px solid #2c2c38 !important; border-radius: 3px !important;
@@ -74,7 +72,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 .stTextArea textarea::placeholder,
 .stTextInput input::placeholder { color: #555 !important; opacity:1 !important; }
 
-/* ── File uploader ── */
 [data-testid="stFileUploader"] {
     background: #1a1a20; border: 1px dashed #2c2c38;
     border-radius: 6px; padding: 4px;
@@ -91,7 +88,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 [data-testid="stFileUploader"] small,
 [data-testid="stFileUploader"] span { color: #888 !important; }
 
-/* ── Buttons ── */
 .stButton > button {
     background: #d22323 !important; color: #fff !important;
     border: none !important; border-radius: 3px !important;
@@ -102,7 +98,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 }
 .stButton > button:hover { background: #a81818 !important; }
 
-/* Example buttons */
 .example-btn .stButton > button {
     background: transparent !important; color: #b0a898 !important;
     border: 1px solid #2c2c38 !important;
@@ -114,7 +109,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
     background: #1e1e26 !important; border-color: #d22323 !important; color: #fff !important;
 }
 
-/* Ghost button (sign out / reupload) */
 .ghost-btn .stButton > button {
     background: transparent !important; color: #666 !important;
     border: 1px solid #2c2c38 !important;
@@ -127,7 +121,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
     background: #1a1a20 !important;
 }
 
-/* ── Header ── */
 .ww-header { text-align: center; padding: 2rem 0 1rem; }
 .ww-logo {
     font-family: 'Bebas Neue', sans-serif; font-size: 5rem;
@@ -144,7 +137,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
     box-shadow:0 0 10px #d22323; margin-left:2px; vertical-align:middle;
 }
 
-/* ── Profile bar ── */
 .profile-bar {
     background: #111116; border: 1px solid #222230;
     border-radius: 8px; padding: 1rem 1.8rem;
@@ -163,24 +155,20 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
     border-radius:3px; padding:2px 7px; font-size:0.72rem; color:#999; margin:2px;
 }
 
-/* ── Expander ── */
 [data-testid="stExpander"] summary {
-    background: #16161c !important;
-    border: 1px solid #2a2a32 !important;
+    background: #16161c !important; border: 1px solid #2a2a32 !important;
     border-radius: 4px !important;
 }
 [data-testid="stExpander"] summary span,
 [data-testid="stExpander"] summary p,
-[data-testid="stExpander"] summary svg {
-    color: #999 !important; fill: #999 !important;
-}
+[data-testid="stExpander"] summary svg { color: #999 !important; fill: #999 !important; }
+
 .label {
     font-family: 'Bebas Neue', sans-serif; font-size: 0.9rem;
     letter-spacing: 0.18em; color: #d22323;
     text-transform: uppercase; margin-bottom: 4px;
 }
 
-/* ── Loading dots ── */
 @keyframes ww-pulse {
     0%,80%,100% { transform:scale(0.5); opacity:0.25; }
     40%         { transform:scale(1.0); opacity:1; }
@@ -198,7 +186,6 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
     letter-spacing:0.12em; text-transform:uppercase; padding-bottom:2rem;
 }
 
-/* ── Recs ── */
 .recs-empty {
     background:#13131a; border:1px solid #1e1e26;
     border-radius:5px; padding:3.5rem 1rem; text-align:center;
@@ -213,8 +200,6 @@ hr { border-color: #1e1e26; }
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  AUTH
-#  On Streamlit Community Cloud st.user gives the Google account.
-#  Locally without OAuth configured, falls back to dev mode.
 # ─────────────────────────────────────────────────────────────────────────────
 DEV_MODE = False
 try:
@@ -246,30 +231,38 @@ defaults = {
     "enriched_films":         None,
     "imdb_summary":           None,
     "taste_profile":          None,
+    "profile_meta":           {},     # display info from DB when parsed_data is None
     "recommendations":        None,
     "replaced":               [],
     "zip_loaded":             False,
     "pending_query":          "",
     "auto_run":               False,
     "profile_loaded_from_db": False,
+    "skip_db_load":           False,  # set True when user clicks "upload different file"
 }
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  LOAD SAVED PROFILE FROM DB (once per session)
+#  LOAD SAVED PROFILE FROM DB (once per session, unless skipped)
 # ─────────────────────────────────────────────────────────────────────────────
-if not st.session_state.profile_loaded_from_db:
+if not st.session_state.profile_loaded_from_db and not st.session_state.skip_db_load:
     try:
         saved = load_profile(user_email)
         if saved:
-            st.session_state.taste_profile  = saved["taste_profile"]
-            st.session_state.imdb_summary   = saved["imdb_summary"]
-            st.session_state.enriched_films = saved["enriched_films"]
-            st.session_state.zip_loaded     = True
+            meta = saved.get("profile_meta") or {}
+            # Only treat as loaded if profile_meta has real data.
+            # Old DB rows saved before profile_meta existed have empty/zero meta.
+            has_real_meta = bool(meta.get("username") or meta.get("ratings_count"))
+            if has_real_meta:
+                st.session_state.taste_profile  = saved["taste_profile"]
+                st.session_state.imdb_summary   = saved["imdb_summary"]
+                st.session_state.enriched_films = saved["enriched_films"]
+                st.session_state.profile_meta   = meta
+                st.session_state.zip_loaded     = True
     except Exception:
-        pass  # DB unavailable — continue without saved profile
+        pass
     st.session_state.profile_loaded_from_db = True
 
 EXAMPLES = [
@@ -314,8 +307,7 @@ def run_recommendations(query: str, loader_slot):
             delay_str = f" Try again in {delay.group(1)} seconds." if delay else ""
             st.warning(
                 f"⚠️ Gemini API quota reached — you've hit the free tier limit for today."
-                f"{delay_str}\n\n"
-                f"Check your usage at [ai.dev/rate-limit](https://ai.dev/rate-limit)."
+                f"{delay_str}\n\nCheck your usage at [ai.dev/rate-limit](https://ai.dev/rate-limit)."
             )
         else:
             st.error(f"Gemini error: {e}")
@@ -332,7 +324,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── User bar (email + sign out, top right) ────────────────────────────────────
 if not DEV_MODE:
     ucol1, ucol2 = st.columns([6, 1])
     with ucol1:
@@ -347,7 +338,7 @@ if not DEV_MODE:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  UPLOAD / PROFILE — full-width above columns
+#  UPLOAD / PROFILE
 # ─────────────────────────────────────────────────────────────────────────────
 if not st.session_state.zip_loaded:
     with st.expander("📦  Upload your Letterboxd Export", expanded=False):
@@ -396,67 +387,95 @@ if not st.session_state.zip_loaded:
                     time.sleep(0.05)
                 progress.empty()
 
+            profile = data["profile"]
+            lists   = data["lists"]
+
+            # Build the profile_meta dict for display on future visits
+            profile_meta = {
+                "given_name":    profile.get("given_name", ""),
+                "family_name":   profile.get("family_name", ""),
+                "username":      profile.get("username", ""),
+                "ratings_count": len(ratings),
+                "watched_count": len(data.get("watched", [])),
+                "watchlist_count": len(data.get("watchlist", [])),
+                "list_names":    list(lists.keys())[:8],
+            }
+
             st.session_state.enriched_films  = enriched
             st.session_state.imdb_summary    = build_enrichment_summary(enriched)
             st.session_state.taste_profile   = build_taste_profile(data, enriched)
+            st.session_state.profile_meta    = profile_meta
             st.session_state.zip_loaded      = True
+            st.session_state.skip_db_load    = False
             st.session_state.recommendations = None
 
-            # ── Save to Supabase ──────────────────────────────────────────────
             try:
                 save_profile(
                     email=user_email,
-                    username=data["profile"].get("username", ""),
+                    username=profile_meta["username"],
                     taste_profile=st.session_state.taste_profile,
                     enriched_films=st.session_state.enriched_films,
                     imdb_summary=st.session_state.imdb_summary,
+                    profile_meta=profile_meta,
                 )
             except Exception:
-                pass  # Don't crash if DB save fails
+                pass
             st.rerun()
 
 else:
+    # ── Profile bar ──────────────────────────────────────────────────────────
+    # Use parsed_data if available (fresh upload), else fall back to profile_meta (from DB)
     if st.session_state.parsed_data:
         data    = st.session_state.parsed_data
         profile = data["profile"]
-        ratings = data["ratings"]
-        lists   = data["lists"]
+        meta    = st.session_state.profile_meta
 
         username = profile.get("username") or profile.get("given_name") or "User"
         name_str = " ".join(filter(None, [
             profile.get("given_name"), profile.get("family_name")
         ])) or username
-
-        pills_html = " ".join(
-            f'<span class="list-pill">{n.replace("-"," ").title()}</span>'
-            for n in list(lists.keys())[:8]
-        ) if lists else ""
-
-        st.markdown(f"""
-        <div class="profile-bar">
-          <p class="profile-bar-name">{name_str}</p>
-          <p class="profile-bar-sub">@{username} &nbsp;·&nbsp;
-            <span>{len(ratings)}</span> rated &nbsp;·&nbsp;
-            <span>{len(data['watched'])}</span> watched &nbsp;·&nbsp;
-            <span>{len(data['watchlist'])}</span> watchlist
-          </p>
-          <div style="margin-top:4px">{pills_html}</div>
-        </div>
-        """, unsafe_allow_html=True)
+        ratings_count  = len(data["ratings"])
+        watched_count  = len(data["watched"])
+        watchlist_count = len(data["watchlist"])
+        list_names     = list(data["lists"].keys())[:8]
     else:
-        # Loaded from DB — no parsed_data in memory
-        st.markdown("""
-        <div class="profile-bar">
-          <p class="profile-bar-sub">✓ Taste profile loaded from your account</p>
-        </div>
-        """, unsafe_allow_html=True)
+        meta           = st.session_state.profile_meta or {}
+        username       = meta.get("username") or meta.get("given_name") or "User"
+        name_str       = " ".join(filter(None, [
+            meta.get("given_name"), meta.get("family_name")
+        ])) or username
+        ratings_count  = meta.get("ratings_count", 0)
+        watched_count  = meta.get("watched_count", 0)
+        watchlist_count = meta.get("watchlist_count", 0)
+        list_names     = meta.get("list_names", [])
 
+    pills_html = " ".join(
+        f'<span class="list-pill">{n.replace("-"," ").title()}</span>'
+        for n in list_names
+    ) if list_names else ""
+
+    st.markdown(f"""
+    <div class="profile-bar">
+      <p class="profile-bar-name">{name_str}</p>
+      <p class="profile-bar-sub">@{username} &nbsp;·&nbsp;
+        <span>{ratings_count}</span> rated &nbsp;·&nbsp;
+        <span>{watched_count}</span> watched &nbsp;·&nbsp;
+        <span>{watchlist_count}</span> watchlist
+      </p>
+      <div style="margin-top:4px">{pills_html}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
     if st.button("↺  Upload a different file", key="reupload"):
-        for k in ["parsed_data","enriched_films","imdb_summary","taste_profile","recommendations","replaced"]:
-            st.session_state[k] = [] if k == "replaced" else None
+        for k in ["parsed_data", "enriched_films", "imdb_summary", "taste_profile",
+                  "profile_meta", "recommendations", "replaced"]:
+            st.session_state[k] = [] if k == "replaced" else ({} if k == "profile_meta" else None)
         st.session_state.zip_loaded             = False
-        st.session_state.profile_loaded_from_db = False
+        st.session_state.profile_loaded_from_db = True   # prevent DB from re-loading
+        st.session_state.skip_db_load           = True   # belt-and-suspenders
         st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -492,7 +511,6 @@ with left:
 
     st.markdown("---")
 
-    # Show taste note after recs, or examples before
     if st.session_state.recommendations and st.session_state.zip_loaded:
         _, taste_note = parse_rec_blocks(st.session_state.recommendations)
         if taste_note:
@@ -518,7 +536,6 @@ with left:
                 st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-# Auto-run from example click
 if st.session_state.auto_run and st.session_state.pending_query:
     run_query = st.session_state.pending_query
     st.session_state.auto_run      = False
@@ -526,7 +543,6 @@ if st.session_state.auto_run and st.session_state.pending_query:
     run_recommendations(run_query, loader_slot)
     st.rerun()
 
-# ── RIGHT: recommendations ────────────────────────────────────────────────────
 with right:
     st.markdown('<p class="label">Recommendations</p>', unsafe_allow_html=True)
 
@@ -575,9 +591,6 @@ with right:
         </div>
         """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  DEBUG EXPANDERS
-# ─────────────────────────────────────────────────────────────────────────────
 if st.session_state.taste_profile:
     with st.expander("📄 View taste profile sent to Gemini"):
         st.code(st.session_state.taste_profile, language=None)
