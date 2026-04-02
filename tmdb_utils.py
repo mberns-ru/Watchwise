@@ -9,11 +9,39 @@ Auth: Bearer token (read access token) — no rate limit concerns for this volum
 import requests
 from collections import Counter
 
-TMDB_BASE = "https://api.themoviedb.org/3"
+TMDB_BASE        = "https://api.themoviedb.org/3"
+TMDB_IMG_BASE    = "https://image.tmdb.org/t/p/w185"   # 185px wide — good for sidebar thumbnails
+TMDB_IMG_FULL    = "https://image.tmdb.org/t/p/w342"   # larger for display
 
 
 def _headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "accept": "application/json"}
+
+
+def fetch_poster(title: str, year: str | None, token: str) -> str | None:
+    """
+    Lightweight poster-only lookup — used after recommendations are generated.
+    Returns full poster image URL or None.
+    """
+    h = _headers(token)
+    for yr in ([year, None] if year else [None]):
+        params = {"query": title, "include_adult": False}
+        if yr and str(yr).isdigit():
+            params["year"] = yr
+        try:
+            r       = requests.get(f"{TMDB_BASE}/search/movie", params=params, headers=h, timeout=5)
+            results = r.json().get("results", [])
+            if results:
+                # Prefer exact title match
+                for res in results[:3]:
+                    if res.get("title", "").lower() == title.lower():
+                        path = res.get("poster_path")
+                        return f"{TMDB_IMG_FULL}{path}" if path else None
+                path = results[0].get("poster_path")
+                return f"{TMDB_IMG_FULL}{path}" if path else None
+        except Exception:
+            pass
+    return None
 
 
 def fetch_film_metadata(title: str, year: str | None, token: str) -> dict | None:

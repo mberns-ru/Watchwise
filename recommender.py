@@ -9,6 +9,55 @@ from google import genai
 from google.genai import types
 
 
+def parse_rec_blocks(text: str) -> tuple[list[dict], str]:
+    """
+    Split Gemini's numbered recommendation text into individual blocks.
+    Returns (blocks, taste_note) where blocks is a list of:
+      {number, title, year, body}
+    """
+    raw_blocks = re.split(r'\n(?=\d+[\.\)]\s)', text.strip())
+
+    blocks     = []
+    taste_note = ""
+
+    for block in raw_blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        # Non-numbered block = Taste note or preamble
+        if not re.match(r'^\d+[\.\)]', block):
+            taste_note = block
+            continue
+
+        first_line       = block.splitlines()[0]
+        first_line_clean = re.sub(r'^\d+[\.\)]\s*', '', first_line).replace("**", "")
+        title_part       = re.split(r'\s[—–-]\s', first_line_clean)[0].strip()
+
+        year_match = re.search(r'\((\d{4})\)', title_part)
+        year  = year_match.group(1) if year_match else None
+        title = re.sub(r'\s*\(\d{4}\)', '', title_part).strip()
+
+        num_match = re.match(r'^(\d+)', block)
+        number    = int(num_match.group(1)) if num_match else len(blocks) + 1
+
+        blocks.append({"number": number, "title": title, "year": year, "body": block})
+
+    # The taste note often gets appended to the last block since it's not
+    # preceded by a number. Strip it out of the last block's body.
+    if blocks:
+        last = blocks[-1]
+        taste_match = re.search(
+            r'\n\n(\*{0,2}Taste note[:\*].*)',
+            last["body"], re.DOTALL | re.IGNORECASE
+        )
+        if taste_match:
+            blocks[-1]["body"] = last["body"][:taste_match.start()].strip()
+            taste_note = taste_match.group(1).strip().lstrip("*").rstrip("*").strip()
+
+    return blocks, taste_note
+
+
 GEMINI_MODEL = "gemini-2.5-flash"
 MAX_RETRIES  = 2   # max replacement passes (each costs 1 Gemini call)
 
