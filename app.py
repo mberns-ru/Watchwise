@@ -232,6 +232,7 @@ defaults = {
     "auto_run":               False,
     "profile_loaded_from_db": False,
     "skip_db_load":           False,
+    "unsaved":                False,
     "auth_open":              False,  # toggles the sign-in panel
 }
 for k, v in defaults.items():
@@ -246,15 +247,12 @@ user_email = st.session_state.user_email
 if user_email and not st.session_state.profile_loaded_from_db and not st.session_state.skip_db_load:
     try:
         saved = load_profile(user_email)
-        if saved:
-            meta = saved.get("profile_meta") or {}
-            has_real_meta = bool(meta.get("username") or meta.get("ratings_count"))
-            if has_real_meta:
-                st.session_state.taste_profile  = saved["taste_profile"]
-                st.session_state.imdb_summary   = saved["imdb_summary"]
-                st.session_state.enriched_films = saved["enriched_films"]
-                st.session_state.profile_meta   = meta
-                st.session_state.zip_loaded     = True
+        if saved and saved.get("taste_profile"):
+            st.session_state.taste_profile  = saved["taste_profile"]
+            st.session_state.imdb_summary   = saved["imdb_summary"]
+            st.session_state.enriched_films = saved["enriched_films"]
+            st.session_state.profile_meta   = saved.get("profile_meta") or {}
+            st.session_state.zip_loaded     = True
     except Exception:
         pass
     st.session_state.profile_loaded_from_db = True
@@ -359,6 +357,19 @@ if not user_email and st.session_state.auth_open:
                     else:
                         st.session_state.user_email = result["user"].email
                         st.session_state.auth_open  = False
+                        # If they uploaded a ZIP before signing in, save it now
+                        if st.session_state.get("taste_profile") and st.session_state.get("profile_meta"):
+                            try:
+                                save_profile(
+                                    email=result["user"].email,
+                                    username=st.session_state.profile_meta.get("username", ""),
+                                    taste_profile=st.session_state.taste_profile,
+                                    enriched_films=st.session_state.enriched_films or [],
+                                    imdb_summary=st.session_state.imdb_summary or "",
+                                    profile_meta=st.session_state.profile_meta,
+                                )
+                            except Exception:
+                                pass
                         st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown('<div class="ghost-btn" style="max-width:420px;margin:0.5rem auto">', unsafe_allow_html=True)
@@ -388,6 +399,20 @@ if not user_email and st.session_state.auth_open:
                     else:
                         st.session_state.user_email = result["user"].email
                         st.session_state.auth_open  = False
+                        st.session_state.profile_loaded_from_db = True  # nothing in DB yet for new account
+                        # If they uploaded a ZIP before signing up, save it now
+                        if st.session_state.get("taste_profile") and st.session_state.get("profile_meta"):
+                            try:
+                                save_profile(
+                                    email=result["user"].email,
+                                    username=st.session_state.profile_meta.get("username", ""),
+                                    taste_profile=st.session_state.taste_profile,
+                                    enriched_films=st.session_state.enriched_films or [],
+                                    imdb_summary=st.session_state.imdb_summary or "",
+                                    profile_meta=st.session_state.profile_meta,
+                                )
+                            except Exception:
+                                pass
                         st.success("Account created! Welcome to Watchwise.")
                         st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
@@ -467,17 +492,7 @@ if not st.session_state.zip_loaded:
             st.session_state.skip_db_load    = False
             st.session_state.recommendations = None
 
-            try:
-                save_profile(
-                    email=user_email,
-                    username=profile_meta["username"],
-                    taste_profile=st.session_state.taste_profile,
-                    enriched_films=st.session_state.enriched_films,
-                    imdb_summary=st.session_state.imdb_summary,
-                    profile_meta=profile_meta,
-                )
-            except Exception:
-                pass
+            st.session_state.unsaved = True   # prompt user to save
             st.rerun()
 
 else:
@@ -517,16 +532,38 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
-    if st.button("↺  Upload a different file", key="reupload"):
-        for k in ["parsed_data","enriched_films","imdb_summary","taste_profile",
-                  "profile_meta","recommendations","replaced"]:
-            st.session_state[k] = [] if k == "replaced" else ({} if k == "profile_meta" else None)
-        st.session_state.zip_loaded             = False
-        st.session_state.profile_loaded_from_db = True
-        st.session_state.skip_db_load           = True
-        st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+    bcol1, bcol2 = st.columns([1, 1])
+    with bcol1:
+        if st.button("↺  Upload a different file", key="reupload"):
+            for k in ["parsed_data","enriched_films","imdb_summary","taste_profile",
+                      "profile_meta","recommendations","replaced"]:
+                st.session_state[k] = [] if k == "replaced" else ({} if k == "profile_meta" else None)
+            st.session_state.zip_loaded             = False
+            st.session_state.profile_loaded_from_db = True
+            st.session_state.skip_db_load           = True
+            st.session_state.unsaved                = False
+            st.rerun()
+    with bcol2:
+        if user_email and st.session_state.get("unsaved"):
+            if st.button("💾  Save to Profile", key="save_profile_btn"):
+                try:
+                    save_profile(
+                        email=user_email,
+                        username=st.session_state.profile_meta.get("username", ""),
+                        taste_profile=st.session_state.taste_profile,
+                        enriched_films=st.session_state.enriched_films or [],
+                        imdb_summary=st.session_state.imdb_summary or "",
+                        profile_meta=st.session_state.profile_meta,
+                    )
+                    st.session_state.unsaved = False
+                    st.success("✓ Saved to your account!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+        elif user_email and not st.session_state.get("unsaved"):
+            st.caption("✓ Saved to your account")
+        elif not user_email and st.session_state.get("unsaved"):
+            st.caption("Sign in to save your profile")
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -639,10 +676,3 @@ with right:
           then hit <strong>Get Recommendations</strong>.</p>
         </div>
         """, unsafe_allow_html=True)
-
-if st.session_state.taste_profile:
-    with st.expander("📄 View taste profile sent to Gemini"):
-        st.code(st.session_state.taste_profile, language=None)
-if st.session_state.imdb_summary:
-    with st.expander("🎞️ TMDB metadata summary"):
-        st.code(st.session_state.imdb_summary, language=None)
