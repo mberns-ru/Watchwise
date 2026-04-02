@@ -8,12 +8,18 @@ import time
 import streamlit as st
 from dotenv import load_dotenv
 from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_watched_set
-from imdb_utils import build_enrichment_summary, fetch_film_metadata
+from tmdb_utils import build_enrichment_summary, fetch_film_metadata
 from recommender import get_recommendations
 
 load_dotenv()
-GEMINI_KEY = os.environ["GEMINI_API_KEY"]
-OMDB_KEY   = os.environ["OMDB_API_KEY"]
+GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
+TMDB_TOKEN  = os.environ.get("TMDB_READ_TOKEN", "")
+
+missing = [k for k, v in {"GEMINI_API_KEY": GEMINI_KEY, "TMDB_READ_TOKEN": TMDB_TOKEN}.items() if not v]
+if missing:
+    st.error(f"Missing environment variables in .env: {', '.join(missing)}")
+    st.code("GEMINI_API_KEY=your_key\nTMDB_READ_TOKEN=your_token", language="bash")
+    st.stop()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -211,7 +217,18 @@ h1, h2, h3, h4 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; 
 
 /* ── Misc ── */
 hr { border-color: #1e1e26; }
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu { visibility: hidden; }
+footer    { visibility: hidden; }
+header    { visibility: hidden; }
+/* Force sidebar always open — hide the collapse/expand toggle entirely */
+[data-testid="collapsedControl"]  { display: none !important; }
+[data-testid="stSidebarCollapsedControl"] { display: none !important; }
+section[data-testid="stSidebar"] { 
+    display: block !important;
+    visibility: visible !important;
+    min-width: 244px !important;
+    transform: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -270,9 +287,9 @@ with st.sidebar:
 
     uploaded_zip = st.file_uploader("Upload ZIP", type=["zip"], label_visibility="collapsed")
 
-    omdb_max = st.slider(
-        "Films to enrich with IMDB", min_value=10, max_value=200, value=100, step=10,
-        help="More = richer taste profile (uses OMDb quota: 1000 req/day free).",
+    tmdb_max = st.slider(
+        "Films to enrich with TMDB", min_value=10, max_value=200, value=100, step=10,
+        help="More = richer taste profile. TMDB is free with no daily quota.",
     )
 
     load_btn = st.button("⚙️  Parse & Enrich Profile")
@@ -295,8 +312,8 @@ with st.sidebar:
             hits     = 0
 
             if ratings:
-                n        = min(omdb_max, len(ratings))
-                progress = st.progress(0, text=f"Fetching IMDB data for {n} films…")
+                n        = min(tmdb_max, len(ratings))
+                progress = st.progress(0, text=f"Fetching TMDB data for {n} films…")
                 seen_set = set()
                 idx      = 0
                 for film in ratings:
@@ -308,7 +325,7 @@ with st.sidebar:
                         continue
                     seen_set.add(name.lower())
 
-                    meta     = fetch_film_metadata(name, year, OMDB_KEY)
+                    meta     = fetch_film_metadata(name, year, TMDB_TOKEN)
                     combined = {"title": name, "year": year, "rating": film.get("rating")}
                     if meta:
                         hits += 1
@@ -320,15 +337,15 @@ with st.sidebar:
                             "Language":   meta.get("Language", "N/A"),
                             "Country":    meta.get("Country", "N/A"),
                             "Plot":       meta.get("Plot", "N/A"),
-                            "imdbRating": meta.get("imdbRating", "N/A"),
-                            "imdbID":     meta.get("imdbID", ""),
+                            "tmdbRating": meta.get("tmdbRating", "N/A"),
+                            "tmdbID":     meta.get("tmdbID", ""),
                         })
                     enriched.append(combined)
                     idx += 1
-                    progress.progress(idx / n, text=f"IMDB ({idx}/{n}): {name}…")
-                    time.sleep(0.12)
+                    progress.progress(idx / n, text=f"TMDB ({idx}/{n}): {name}…")
+                    time.sleep(0.05)   # TMDB allows ~50 req/s
                 progress.empty()
-                st.caption(f"IMDB: {hits}/{idx} films found")
+                st.caption(f"TMDB: {hits}/{idx} films matched")
 
             st.session_state.enriched_films  = enriched
             st.session_state.imdb_summary    = build_enrichment_summary(enriched)
