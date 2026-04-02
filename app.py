@@ -14,9 +14,9 @@ from db import sign_in, sign_up, sign_out, load_profile, save_profile
 
 load_dotenv()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-TMDB_TOKEN = os.environ.get("TMDB_READ_TOKEN", "")
+TMDB_READ_TOKEN = os.environ.get("TMDB_READ_TOKEN", "")
 
-missing = [k for k, v in {"GEMINI_API_KEY": GEMINI_KEY, "TMDB_READ_TOKEN": TMDB_TOKEN}.items() if not v]
+missing = [k for k, v in {"GEMINI_API_KEY": GEMINI_KEY, "TMDB_READ_TOKEN": TMDB_READ_TOKEN}.items() if not v]
 if missing:
     st.error(f"Missing environment variables: {', '.join(missing)}")
     st.stop()
@@ -467,7 +467,7 @@ if not st.session_state.zip_loaded:
                     if name.lower() in seen_set:
                         continue
                     seen_set.add(name.lower())
-                    meta     = fetch_film_metadata(name, year, TMDB_TOKEN)
+                    meta     = fetch_film_metadata(name, year, TMDB_READ_TOKEN)
                     combined = {"title": name, "year": year, "rating": film.get("rating")}
                     if meta:
                         hits += 1
@@ -680,7 +680,7 @@ with right:
 
         for block in blocks:
             try:
-                result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_TOKEN)
+                result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_READ_TOKEN)
                 poster_url = result["poster_url"]
                 providers  = result["providers"]
             except Exception:
