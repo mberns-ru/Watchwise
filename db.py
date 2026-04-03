@@ -146,3 +146,34 @@ def get_public_profile(slug: str) -> dict | None:
             "slug":           row.get("slug"),
         }
     return None
+
+
+def search_profiles(query: str, limit: int = 8) -> list[dict]:
+    """Search public profiles by username/slug prefix."""
+    if not query or not query.strip():
+        return []
+    client = get_client()
+    try:
+        res = (
+            client.table("profiles")
+            .select("slug, username, profile_meta")
+            .eq("is_public", True)
+            .ilike("slug", f"{query.strip().lower()}%")
+            .limit(limit)
+            .execute()
+        )
+        results = []
+        for row in (res.data or []):
+            meta = row.get("profile_meta") or {}
+            if isinstance(meta, str):
+                import json
+                meta = json.loads(meta)
+            results.append({
+                "slug":     row.get("slug", ""),
+                "username": row.get("username") or row.get("slug", ""),
+                "ratings_count":  meta.get("ratings_count", 0),
+                "watched_count":  meta.get("watched_count", 0),
+            })
+        return results
+    except Exception:
+        return []

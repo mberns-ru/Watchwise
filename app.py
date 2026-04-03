@@ -11,7 +11,7 @@ from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_wat
 from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
 from recommender import get_recommendations, parse_rec_blocks
 import extra_streamlit_components as stx
-from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile, sign_in_with_google, get_session_from_tokens
+from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile, sign_in_with_google, get_session_from_tokens, search_profiles
 
 load_dotenv()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -22,13 +22,14 @@ if missing:
     st.error(f"Missing environment variables: {', '.join(missing)}")
     st.stop()
 
-BASE_URL = os.environ.get("WATCHWISE_URL", "")
+BASE_URL = os.environ.get("WATCHWISE_URL", "").rstrip("/")
 if not BASE_URL:
     try:
         _host = st.context.headers.get("host", "")
         BASE_URL = f"https://{_host}" if _host and "localhost" not in _host else "http://localhost:8501"
     except Exception:
         BASE_URL = "http://localhost:8501"
+BASE_URL = BASE_URL.rstrip("/")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -129,6 +130,20 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 .ghost-btn .stButton > button:hover {
     color: #e8e2d8 !important; border-color: #555 !important;
     background: #1a1a20 !important;
+}
+
+.search-result-btn .stButton > button {
+    background: transparent !important; color: #e8e2d8 !important;
+    border: none !important; border-bottom: 1px solid #1e1e26 !important;
+    border-radius: 0 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.88rem !important; letter-spacing: 0.01em !important;
+    padding: 0.5rem 0.8rem !important;
+    text-align: left !important; width: 100% !important;
+}
+.search-result-btn .stButton > button:hover {
+    background: #1a1a20 !important; color: #fff !important;
+    border-bottom-color: #2c2c38 !important;
 }
 
 .google-btn .stButton > button {
@@ -258,6 +273,7 @@ defaults = {
     "skip_db_load":           False,
     "unsaved":                False,
     "auth_open":              False,
+    "search_open":            False,
     # Sharing
     "profile_is_public":      True,
     "profile_slug":           None,
@@ -455,12 +471,75 @@ def run_recommendations(query: str, loader_slot, friend_taste_profile: str | Non
 # ─────────────────────────────────────────────────────────────────────────────
 #  HEADER
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
+st.markdown(f"""
 <div class="ww-header">
-  <p class="ww-logo">WATCHWISE<span class="rec-dot"></span></p>
+  <a href="{BASE_URL}" target="_self" style="text-decoration:none">
+    <p class="ww-logo">WATCHWISE<span class="rec-dot"></span></p>
+  </a>
   <p class="ww-tagline">AI-Backed Movie Suggestions</p>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Top nav: auth + search (renders on ALL pages before st.stop) ──────────────
+_display_name = (
+    st.session_state.profile_slug
+    or (st.session_state.profile_meta or {}).get("username")
+    or user_email or ""
+)
+if user_email:
+    _n1, _n2, _n3 = st.columns([2, 1.2, 0.8])
+    with _n1:
+        search_query = st.text_input(
+            "search_users",
+            placeholder="🔍  Find a user to watch together…",
+            label_visibility="collapsed",
+            key="user_search_box",
+        )
+    with _n2:
+        st.markdown(
+            f'<p style="font-size:0.75rem;color:#666;margin:0;padding-top:8px;text-align:right">'
+            f'Logged in as: <span style="color:#aaa">@{_display_name}</span></p>',
+            unsafe_allow_html=True,
+        )
+    with _n3:
+        st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
+        if st.button("Sign out", key="signout"):
+            clear_auth_cookie()
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    if search_query and search_query.strip():
+        _results = search_profiles(search_query.strip())
+        _sc, _ = st.columns([2, 2])
+        with _sc:
+            if _results:
+                st.markdown(
+                    '<div style="background:#111116;border:1px solid #2c2c38;'
+                    'border-radius:4px;margin-top:-12px;overflow:hidden">',
+                    unsafe_allow_html=True,
+                )
+                for _r in _results:
+                    st.markdown('<div class="search-result-btn">', unsafe_allow_html=True)
+                    if st.button(
+                        f"@{_r['username']}  ·  {_r['ratings_count']} rated",
+                        key=f"sr_{_r['slug']}",
+                    ):
+                        st.query_params["u"] = _r["slug"]
+                        st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.caption("No users found.")
+else:
+    _, rbtn = st.columns([6, 1])
+    with rbtn:
+        if not st.session_state.auth_open:
+            st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
+            if st.button("Sign in", key="open_auth"):
+                st.session_state.auth_open = not st.session_state.auth_open
+                st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SHARED PROFILE VIEW  (?u=username)
@@ -469,6 +548,16 @@ shared_slug = st.query_params.get("u")
 if shared_slug:
     my_username = (st.session_state.profile_meta or {}).get("username", "")
     viewing_own = my_username.lower() == shared_slug.lower()
+
+    # ── Nav bar on shared profile page ───────────────────────────────────────
+    hcol, _ = st.columns([1, 5])
+    with hcol:
+        st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
+        if st.button("← Home", key="home_btn"):
+            st.session_state.search_open = False
+            st.query_params.clear()
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     if viewing_own:
         st.info("This is your own shareable profile link. Others will see it like this:")
@@ -624,30 +713,6 @@ if shared_slug:
 #  AUTH PANEL
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Top-right: auth controls ──────────────────────────────────────────────────
-if user_email:
-    ucol1, ucol2 = st.columns([6, 1])
-    with ucol1:
-        st.markdown(
-            f'<p style="text-align:right;font-size:0.75rem;color:#555;margin:0">{user_email}</p>',
-            unsafe_allow_html=True,
-        )
-    with ucol2:
-        if st.button("Sign out", key="signout"):
-            clear_auth_cookie()
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-else:
-    _, rbtn = st.columns([6, 1])
-    with rbtn:
-        if not st.session_state.auth_open:
-            st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
-            if st.button("Sign in", key="open_auth"):
-                st.session_state.auth_open = not st.session_state.auth_open
-                st.rerun()
-
 # ── Auth panel (shown when Sign in is clicked) ────────────────────────────────
 if not user_email and st.session_state.auth_open:
     _, mid, _ = st.columns([1, 1.4, 1])
@@ -669,7 +734,7 @@ if not user_email and st.session_state.auth_open:
             # Google button
             st.markdown('<div class="google-btn">', unsafe_allow_html=True)
             if st.button("🔵  Continue with Google", key="google_login"):
-                result = sign_in_with_google(BASE_URL)
+                result = sign_in_with_google(f"{BASE_URL}/")
                 if result["error"]:
                     st.error(result["error"])
                 elif result["url"]:
@@ -718,7 +783,7 @@ if not user_email and st.session_state.auth_open:
             # Google button
             st.markdown('<div class="google-btn">', unsafe_allow_html=True)
             if st.button("🔵  Sign up with Google", key="google_signup"):
-                result = sign_in_with_google(BASE_URL)
+                result = sign_in_with_google(f"{BASE_URL}/")
                 if result["error"]:
                     st.error(result["error"])
                 elif result["url"]:
@@ -846,9 +911,9 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    bcol1, bcol2, bcol3 = st.columns([1, 1, 1])
+    bcol1, bcol2 = st.columns([1, 2])
     with bcol1:
-        if st.button("↺  Upload a different file", key="reupload"):
+        if st.button("↺  Upload new Letterboxd data", key="reupload"):
             for k in ["parsed_data","enriched_films","imdb_summary","taste_profile",
                       "profile_meta","recommendations","replaced"]:
                 st.session_state[k] = [] if k == "replaced" else ({} if k == "profile_meta" else None)
@@ -869,35 +934,33 @@ else:
                         enriched_films=st.session_state.enriched_films or [],
                         imdb_summary=st.session_state.imdb_summary or "",
                         profile_meta=st.session_state.profile_meta,
-                        is_public=st.session_state.profile_is_public,
+                        is_public=True,
                         slug=_slug,
                     )
-                    st.session_state.profile_slug  = _slug
-                    st.session_state.unsaved = False
-                    st.success("✓ Saved to your account!")
+                    st.session_state.profile_slug      = _slug
+                    st.session_state.profile_is_public = True
+                    st.session_state.unsaved           = False
+                    st.success("✓ Saved!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Save failed: {e}")
-        elif user_email and not st.session_state.get("unsaved"):
-            st.caption("✓ Saved to your account")
         elif not user_email and st.session_state.get("unsaved"):
             st.caption("Sign in to save your profile")
-    with bcol3:
-        if user_email and not st.session_state.get("unsaved"):
-            _slug = st.session_state.profile_slug or st.session_state.profile_meta.get("username", "")
-            _is_public = st.session_state.profile_is_public
-            new_public = st.toggle("🔗 Share profile", value=_is_public, key="public_toggle")
-            if new_public != _is_public:
-                try:
-                    set_profile_public(user_email, new_public, _slug)
-                    st.session_state.profile_is_public = new_public
-                    st.session_state.profile_slug      = _slug if new_public else None
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Could not update: {e}")
-            if _is_public and _slug:
+        elif user_email and not st.session_state.get("unsaved"):
+            _slug = st.session_state.profile_slug or (st.session_state.profile_meta or {}).get("username", "")
+            if _slug:
                 share_url = f"{BASE_URL}/?u={_slug}"
-                st.code(share_url, language=None)
+                st.markdown(
+                    f'<div style="display:inline-flex;align-items:center;gap:8px;'
+                    f'background:#1a1a20;border:1px solid #2c2c38;border-radius:4px;'
+                    f'padding:6px 12px;margin-top:4px">'
+                    f'<span style="color:#d22323;font-size:0.85rem">🔗</span>'
+                    f'<a href="{share_url}" target="_blank" style="color:#c8c2b8;'
+                    f'font-size:0.78rem;font-family:monospace;text-decoration:none;'
+                    f'letter-spacing:0.01em">{share_url}</a>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
