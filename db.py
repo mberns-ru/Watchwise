@@ -13,7 +13,6 @@ def get_client():
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def sign_up(email: str, password: str) -> dict:
-    """Register a new user. Returns {"user": ..., "error": None} or {"user": None, "error": str}."""
     try:
         client = get_client()
         res = client.auth.sign_up({"email": email, "password": password})
@@ -25,7 +24,6 @@ def sign_up(email: str, password: str) -> dict:
 
 
 def sign_in(email: str, password: str) -> dict:
-    """Sign in an existing user."""
     try:
         client = get_client()
         res = client.auth.sign_in_with_password({"email": email, "password": password})
@@ -64,13 +62,17 @@ def load_profile(email: str) -> dict | None:
             "enriched_films": json.loads(row["enriched_films"])
                                if row.get("enriched_films") else [],
             "profile_meta":   meta or {},
+            "is_public":      row.get("is_public", False),
+            "slug":           row.get("slug"),
         }
     return None
 
 
 def save_profile(email: str, username: str, taste_profile: str,
                  enriched_films: list, imdb_summary: str,
-                 profile_meta: dict | None = None):
+                 profile_meta: dict | None = None,
+                 is_public: bool = False,
+                 slug: str | None = None):
     client = get_client()
     client.table("profiles").upsert({
         "user_email":     email,
@@ -79,5 +81,43 @@ def save_profile(email: str, username: str, taste_profile: str,
         "imdb_summary":   imdb_summary,
         "enriched_films": json.dumps(enriched_films),
         "profile_meta":   json.dumps(profile_meta or {}),
+        "is_public":      is_public,
+        "slug":           slug.lower() if slug else None,
         "updated_at":     "now()",
     }, on_conflict="user_email").execute()
+
+
+def set_profile_public(email: str, is_public: bool, slug: str | None = None):
+    """Toggle a profile's public visibility."""
+    client = get_client()
+    client.table("profiles").update({
+        "is_public": is_public,
+        "slug":      slug.lower() if (is_public and slug) else None,
+    }).eq("user_email", email).execute()
+
+
+def get_public_profile(slug: str) -> dict | None:
+    """Fetch a public profile by its slug (Letterboxd username)."""
+    client = get_client()
+    res = (
+        client.table("profiles")
+        .select("*")
+        .eq("slug", slug.lower())
+        .eq("is_public", True)
+        .execute()
+    )
+    if res.data:
+        row = res.data[0]
+        meta = row.get("profile_meta")
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        return {
+            "username":       row.get("username") or slug,
+            "taste_profile":  row.get("taste_profile"),
+            "imdb_summary":   row.get("imdb_summary"),
+            "enriched_films": json.loads(row["enriched_films"])
+                               if row.get("enriched_films") else [],
+            "profile_meta":   meta or {},
+            "slug":           row.get("slug"),
+        }
+    return None

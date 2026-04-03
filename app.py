@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_watched_set
 from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
 from recommender import get_recommendations, parse_rec_blocks
-from db import sign_in, sign_up, sign_out, load_profile, save_profile
+from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile
 
 load_dotenv()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -20,6 +20,8 @@ missing = [k for k, v in {"GEMINI_API_KEY": GEMINI_KEY, "TMDB_READ_TOKEN": TMDB_
 if missing:
     st.error(f"Missing environment variables: {', '.join(missing)}")
     st.stop()
+
+BASE_URL = os.environ.get("WATCHWISE_URL", "http://localhost:8501")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -230,10 +232,17 @@ defaults = {
     "zip_loaded":             False,
     "pending_query":          "",
     "auto_run":               False,
+    "do_run":                 False,
     "profile_loaded_from_db": False,
     "skip_db_load":           False,
     "unsaved":                False,
-    "auth_open":              False,  # toggles the sign-in panel
+    "auth_open":              False,
+    # Sharing
+    "profile_is_public":      False,
+    "profile_slug":           None,
+    # Watch Together
+    "friend_profile":         None,   # dict with taste_profile, username, meta
+    "watch_together":         False,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -248,11 +257,13 @@ if user_email and not st.session_state.profile_loaded_from_db and not st.session
     try:
         saved = load_profile(user_email)
         if saved and saved.get("taste_profile"):
-            st.session_state.taste_profile  = saved["taste_profile"]
-            st.session_state.imdb_summary   = saved["imdb_summary"]
-            st.session_state.enriched_films = saved["enriched_films"]
-            st.session_state.profile_meta   = saved.get("profile_meta") or {}
-            st.session_state.zip_loaded     = True
+            st.session_state.taste_profile       = saved["taste_profile"]
+            st.session_state.imdb_summary        = saved["imdb_summary"]
+            st.session_state.enriched_films      = saved["enriched_films"]
+            st.session_state.profile_meta        = saved.get("profile_meta") or {}
+            st.session_state.profile_is_public   = saved.get("is_public", False)
+            st.session_state.profile_slug        = saved.get("slug")
+            st.session_state.zip_loaded          = True
     except Exception:
         pass
     st.session_state.profile_loaded_from_db = True
@@ -276,7 +287,7 @@ LOADER_HTML = """
 # ─────────────────────────────────────────────────────────────────────────────
 #  HELPER
 # ─────────────────────────────────────────────────────────────────────────────
-def run_recommendations(query: str, loader_slot):
+def run_recommendations(query: str, loader_slot, friend_taste_profile: str | None = None):
     loader_slot.markdown(LOADER_HTML, unsafe_allow_html=True)
     try:
         watched_set = get_watched_set(st.session_state.parsed_data) \
@@ -287,6 +298,7 @@ def run_recommendations(query: str, loader_slot):
             imdb_summary=st.session_state.imdb_summary,
             watched_set=watched_set,
             conversation_history=st.session_state.get("chat_history") or None,
+            friend_taste_profile=friend_taste_profile,
             api_key=GEMINI_KEY,
         )
         # Append this exchange to chat history
@@ -318,6 +330,168 @@ st.markdown("""
   <p class="ww-tagline">AI-Backed Movie Suggestions</p>
 </div>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  SHARED PROFILE VIEW  (?u=username)
+# ─────────────────────────────────────────────────────────────────────────────
+shared_slug = st.query_params.get("u")
+if shared_slug:
+    my_username = (st.session_state.profile_meta or {}).get("username", "")
+    viewing_own = my_username.lower() == shared_slug.lower()
+
+    if viewing_own:
+        st.info("This is your own shareable profile link. Others will see it like this:")
+
+    try:
+        fp = get_public_profile(shared_slug)
+    except Exception:
+        fp = None
+
+    if not fp:
+        st.error(f"Profile **@{shared_slug}** not found or isn't public yet.")
+        st.stop()
+
+    fmeta       = fp.get("profile_meta") or {}
+    fname       = " ".join(filter(None, [fmeta.get("given_name"), fmeta.get("family_name")])) or fp["username"]
+    frating     = fmeta.get("ratings_count", 0)
+    fwatched    = fmeta.get("watched_count", 0)
+    fwatchlist  = fmeta.get("watchlist_count", 0)
+    flist_names = fmeta.get("list_names", [])
+
+    fpills = " ".join(
+        f'<span class="list-pill">{n.replace("-"," ").title()}</span>'
+        for n in flist_names
+    ) if flist_names else ""
+
+    st.markdown(f"""
+    <div class="profile-bar">
+      <p class="profile-bar-name">{fname}</p>
+      <p class="profile-bar-sub">@{fp["username"]} &nbsp;·&nbsp;
+        <span>{frating}</span> rated &nbsp;·&nbsp;
+        <span>{fwatched}</span> watched &nbsp;·&nbsp;
+        <span>{fwatchlist}</span> watchlist
+      </p>
+      <div style="margin-top:4px">{fpills}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Watch Together toggle (only if viewer has their own profile loaded) ──
+    has_my_profile = bool(st.session_state.taste_profile)
+    watch_together = False
+    if has_my_profile and not viewing_own:
+        wt_col, _ = st.columns([2, 3])
+        with wt_col:
+            watch_together = st.toggle(
+                f"🍿 Watch Together mode — blend your taste with @{fp['username']}",
+                key="wt_toggle",
+            )
+        if watch_together:
+            st.success(f"Recommendations will now consider both your taste and @{fp['username']}'s.")
+    elif not has_my_profile and not viewing_own:
+        st.caption("💡 Upload your own Letterboxd export on the home page to enable Watch Together mode.")
+
+    st.markdown("<hr>", unsafe_allow_html=True)
+
+    # ── Two-column layout for shared profile ─────────────────────────────────
+    sleft, sright = st.columns([2, 3], gap="large")
+    sloader = sright.empty()
+
+    with sleft:
+        if watch_together:
+            st.markdown(f'<p class="label">What should you two watch?</p>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<p class="label">What should @{fp["username"]} watch?</p>', unsafe_allow_html=True)
+
+        sq = st.text_area(
+            "shared_query",
+            placeholder='e.g. "Something slow-burn and atmospheric" or "A great horror-comedy"',
+            height=120,
+            label_visibility="collapsed",
+            key="shared_query_box",
+        )
+
+        if st.button("🎬  Get Recommendations", key="shared_get_recs"):
+            if sq.strip():
+                sloader.markdown(LOADER_HTML, unsafe_allow_html=True)
+                try:
+                    recs, _ = get_recommendations(
+                        query=sq.strip(),
+                        taste_profile=fp["taste_profile"],
+                        imdb_summary=fp.get("imdb_summary"),
+                        friend_taste_profile=st.session_state.taste_profile if watch_together else None,
+                        api_key=GEMINI_KEY,
+                    )
+                    st.session_state["shared_recs"] = recs
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                finally:
+                    sloader.empty()
+                st.rerun()
+
+        if not viewing_own:
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown(
+                f'<p style="font-size:0.75rem;color:#555">Want recs based on <em>your</em> taste?'
+                f' <a href="/" style="color:#d22323">Go home ↗</a></p>',
+                unsafe_allow_html=True,
+            )
+
+    with sright:
+        st.markdown('<p class="label">Recommendations</p>', unsafe_allow_html=True)
+        shared_recs = st.session_state.get("shared_recs")
+        if shared_recs:
+            blocks, taste_note = parse_rec_blocks(shared_recs)
+            for block in blocks:
+                try:
+                    result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_READ_TOKEN)
+                    poster_url = result["poster_url"]
+                    providers  = result["providers"]
+                except Exception:
+                    poster_url = None
+                    providers  = []
+                col_img, col_text = st.columns([1, 4], gap="medium")
+                with col_img:
+                    if poster_url:
+                        st.markdown(
+                            f'<img src="{poster_url}" style="width:100%;border-radius:4px;">',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            '<div style="background:#1e1e26;border-radius:4px;'
+                            'aspect-ratio:2/3;display:flex;align-items:center;'
+                            'justify-content:center;color:#444;font-size:1.5rem;">🎬</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if providers:
+                        logos_html = "".join(
+                            f'<img src="{p["logo_url"]}" title="{p["name"]}" '
+                            f'style="width:24px;height:24px;border-radius:4px;margin:2px" />' if p["logo_url"]
+                            else f'<span style="font-size:0.65rem;color:#888">{p["name"]}</span>'
+                            for p in providers[:6]
+                        )
+                        st.markdown(
+                            f'<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:2px">{logos_html}</div>',
+                            unsafe_allow_html=True,
+                        )
+                with col_text:
+                    st.markdown(block["body"])
+                st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0'>", unsafe_allow_html=True)
+            if taste_note:
+                st.markdown(taste_note)
+        else:
+            st.markdown("""
+            <div class="recs-empty">
+              <p class="recs-empty-title">LIGHTS · CAMERA · ASK</p>
+              <p class="recs-empty-sub">Type a query on the left and hit <strong>Get Recommendations</strong>.</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.stop()
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AUTH PANEL
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Top-right: auth controls ──────────────────────────────────────────────────
 if user_email:
@@ -433,7 +607,7 @@ if not user_email and st.session_state.auth_open:
 # ─────────────────────────────────────────────────────────────────────────────
 if not st.session_state.zip_loaded:
     with st.expander("📦  Upload your Letterboxd Export", expanded=False):
-        st.caption("letterboxd.com → Settings → Import & Export → Export Your Data")
+        st.caption("letterboxd.com → Settings → Import & Export → Export Your Data — or go directly to [letterboxd.com/data/export/](https://letterboxd.com/data/export/)")
         uploaded_zip = st.file_uploader("ZIP", type=["zip"], label_visibility="collapsed")
         load_btn = st.button("⚙️  Parse & Enrich Profile")
 
@@ -538,7 +712,7 @@ else:
     </div>
     """, unsafe_allow_html=True)
 
-    bcol1, bcol2 = st.columns([1, 1])
+    bcol1, bcol2, bcol3 = st.columns([1, 1, 1])
     with bcol1:
         if st.button("↺  Upload a different file", key="reupload"):
             for k in ["parsed_data","enriched_films","imdb_summary","taste_profile",
@@ -560,6 +734,8 @@ else:
                         enriched_films=st.session_state.enriched_films or [],
                         imdb_summary=st.session_state.imdb_summary or "",
                         profile_meta=st.session_state.profile_meta,
+                        is_public=st.session_state.profile_is_public,
+                        slug=st.session_state.profile_slug,
                     )
                     st.session_state.unsaved = False
                     st.success("✓ Saved to your account!")
@@ -570,6 +746,22 @@ else:
             st.caption("✓ Saved to your account")
         elif not user_email and st.session_state.get("unsaved"):
             st.caption("Sign in to save your profile")
+    with bcol3:
+        if user_email and not st.session_state.get("unsaved"):
+            _slug = st.session_state.profile_slug or st.session_state.profile_meta.get("username", "")
+            _is_public = st.session_state.profile_is_public
+            new_public = st.toggle("🔗 Share profile", value=_is_public, key="public_toggle")
+            if new_public != _is_public:
+                try:
+                    set_profile_public(user_email, new_public, _slug)
+                    st.session_state.profile_is_public = new_public
+                    st.session_state.profile_slug      = _slug if new_public else None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not update: {e}")
+            if _is_public and _slug:
+                share_url = f"{BASE_URL}/?u={_slug}"
+                st.code(share_url, language=None)
 
 st.markdown("<hr>", unsafe_allow_html=True)
 
@@ -618,9 +810,8 @@ with left:
     else:
         go = st.button("🎬  Get Recommendations", key="get_recs")
         if go and query.strip():
-            st.session_state.pending_query = ""
-            st.session_state.auto_run      = False
-            run_recommendations(query, loader_slot)
+            st.session_state.pending_query = query.strip()
+            st.session_state.auto_run      = True
             st.rerun()
 
     st.markdown("---")
@@ -629,13 +820,7 @@ with left:
         _, taste_note = parse_rec_blocks(st.session_state.recommendations)
         if taste_note:
             st.markdown(taste_note)
-    else:
-        if st.session_state.recommendations:
-            st.markdown("""
-            <style>
-            @media (max-width: 768px) { .examples-block { display: none !important; } }
-            </style>
-            """, unsafe_allow_html=True)
+    elif not st.session_state.auto_run and not st.session_state.do_run and not st.session_state.recommendations:
         st.markdown('<div class="examples-block">', unsafe_allow_html=True)
         st.markdown('<p class="label" style="font-size:0.75rem">Quick examples</p>', unsafe_allow_html=True)
         cols = st.columns(2)
@@ -649,11 +834,20 @@ with left:
                 st.markdown('</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+# Stage 1 — examples are now hidden (auto_run=True), queue the actual API call
 if st.session_state.auto_run and st.session_state.pending_query:
+    st.session_state.auto_run = False
+    st.session_state.do_run   = True
+    st.rerun()
+
+# Stage 2 — clean render (no examples) is showing; now call the API
+if st.session_state.do_run and st.session_state.pending_query:
     run_query = st.session_state.pending_query
-    st.session_state.auto_run      = False
+    st.session_state.do_run        = False
     st.session_state.pending_query = ""
-    run_recommendations(run_query, loader_slot)
+    friend_tp = (st.session_state.friend_profile or {}).get("taste_profile") \
+        if st.session_state.watch_together else None
+    run_recommendations(run_query, loader_slot, friend_taste_profile=friend_tp)
     st.rerun()
 
 with right:

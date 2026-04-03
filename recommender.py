@@ -68,6 +68,24 @@ Rules:
 If no taste profile is provided, make strong general recommendations with brief justifications.
 """
 
+WATCH_TOGETHER_SYSTEM_PROMPT = """You are Watchwise, an expert AI movie recommendation assistant with encyclopedic knowledge of world cinema.
+
+Your task: Two users want to watch a movie TOGETHER. You have been given BOTH of their Letterboxd taste profiles. Your job is to find films that genuinely appeal to both — not a compromise, but something each would actually be excited about.
+
+Rules:
+- Recommend exactly 5 films unless asked otherwise.
+- For each film provide:
+    • **Title (Year)** — Director
+    • Genre | Runtime | Language/Country
+    • One sentence on why it matches the QUERY.
+    • One sentence explaining why it works for BOTH users — reference specific overlap in their tastes (shared genres, directors, ratings patterns).
+- Do NOT recommend any film either user has already seen.
+- Avoid genres or styles that either user has rated poorly.
+- Look for genuine overlap: shared high ratings, complementary taste signals, list names that suggest common ground.
+- Format output as a clean numbered list.
+- End with a short "Taste note:" paragraph noting the interesting overlaps (and tensions) between their two profiles.
+"""
+
 
 def _extract_titles(text: str) -> list[str]:
     titles = []
@@ -87,13 +105,13 @@ def _find_seen(titles, watched_set):
     return [t for t in titles if t in watched_set]
 
 
-def _call_gemini(client, contents) -> str:
+def _call_gemini(client, contents, system_instruction: str = SYSTEM_PROMPT) -> str:
     """contents can be a plain string OR a list of role/parts dicts for multi-turn."""
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=contents,
         config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=system_instruction,
             max_output_tokens=8192,
         ),
     )
@@ -106,6 +124,7 @@ def get_recommendations(
     imdb_summary: str | None = None,
     watched_set: set[str] | None = None,
     conversation_history: list[dict] | None = None,
+    friend_taste_profile: str | None = None,
     api_key: str = "",
 ) -> tuple[str, list[str]]:
     """
@@ -122,9 +141,15 @@ def get_recommendations(
 
     client = genai.Client(api_key=api_key)
 
-    # Build the context prefix (taste profile + TMDB summary)
+    # Choose system prompt based on mode
+    system = WATCH_TOGETHER_SYSTEM_PROMPT if friend_taste_profile else SYSTEM_PROMPT
+
+    # Build the context prefix
     context_parts = []
-    if taste_profile:
+    if taste_profile and friend_taste_profile:
+        context_parts.append("=== YOUR TASTE PROFILE ===\n" + taste_profile)
+        context_parts.append("=== FRIEND'S TASTE PROFILE ===\n" + friend_taste_profile)
+    elif taste_profile:
         context_parts.append(taste_profile)
     if imdb_summary:
         context_parts.append(imdb_summary)
@@ -152,7 +177,7 @@ def get_recommendations(
         sections.append(f"=== USER QUERY ===\n{query}")
         full_prompt = "\n\n".join(sections)
 
-    text = _call_gemini(client, full_prompt)
+    text = _call_gemini(client, full_prompt, system)
 
     # ── Retry loop: replace already-seen films ───────────────────────────────
     replaced = []
@@ -166,7 +191,6 @@ def get_recommendations(
         seen_str = ", ".join(f'"{t.title()}"' for t in seen_now)
 
         if isinstance(full_prompt, list):
-            # Append correction as a new user message
             correction = (
                 f"Your previous response included {seen_str}, which the user has already seen. "
                 f"Please provide the full 5-film list again, replacing those with unseen films. "
@@ -180,6 +204,6 @@ def get_recommendations(
                 f"Please provide the full 5-film list again, replacing those with unseen films.\n\n"
                 f"Previous response:\n{text}"
             )
-        text = _call_gemini(client, full_prompt)
+        text = _call_gemini(client, full_prompt, system)
 
     return text, replaced
