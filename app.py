@@ -21,7 +21,13 @@ if missing:
     st.error(f"Missing environment variables: {', '.join(missing)}")
     st.stop()
 
-BASE_URL = os.environ.get("WATCHWISE_URL", "http://localhost:8501")
+BASE_URL = os.environ.get("WATCHWISE_URL", "")
+if not BASE_URL:
+    try:
+        _host = st.context.headers.get("host", "")
+        BASE_URL = f"https://{_host}" if _host and "localhost" not in _host else "http://localhost:8501"
+    except Exception:
+        BASE_URL = "http://localhost:8501"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -231,14 +237,14 @@ defaults = {
     # UI
     "zip_loaded":             False,
     "pending_query":          "",
-    "auto_run":               False,
-    "do_run":                 False,
+    "loading":                False,
+    "do_api":                 False,
     "profile_loaded_from_db": False,
     "skip_db_load":           False,
     "unsaved":                False,
     "auth_open":              False,
     # Sharing
-    "profile_is_public":      False,
+    "profile_is_public":      True,
     "profile_slug":           None,
     # Watch Together
     "friend_profile":         None,   # dict with taste_profile, username, meta
@@ -269,12 +275,12 @@ if user_email and not st.session_state.profile_loaded_from_db and not st.session
     st.session_state.profile_loaded_from_db = True
 
 EXAMPLES = [
+    "A romantic comedy with heart",
     "Foreign murder mystery under 90 minutes",
-    "Slow-burn psychological horror, not gore",
     "Female-directed drama from the last 10 years",
     "Underrated 80s sci-fi I've probably never heard of",
-    "Something funny but genuinely dark",
     "A great documentary to watch tonight",
+    "Slow-burn psychological horror, not gore",
 ]
 
 LOADER_HTML = """
@@ -727,6 +733,7 @@ else:
         if user_email and st.session_state.get("unsaved"):
             if st.button("💾  Save to Profile", key="save_profile_btn"):
                 try:
+                    _slug = st.session_state.profile_slug or st.session_state.profile_meta.get("username", "")
                     save_profile(
                         email=user_email,
                         username=st.session_state.profile_meta.get("username", ""),
@@ -735,8 +742,9 @@ else:
                         imdb_summary=st.session_state.imdb_summary or "",
                         profile_meta=st.session_state.profile_meta,
                         is_public=st.session_state.profile_is_public,
-                        slug=st.session_state.profile_slug,
+                        slug=_slug,
                     )
+                    st.session_state.profile_slug  = _slug
                     st.session_state.unsaved = False
                     st.success("✓ Saved to your account!")
                     st.rerun()
@@ -768,163 +776,208 @@ st.markdown("<hr>", unsafe_allow_html=True)
 # ─────────────────────────────────────────────────────────────────────────────
 #  TWO-COLUMN LAYOUT
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Three-stage flow so examples disappear BEFORE Gemini blocks the thread:
+#   Stage 0  normal render  — examples + query visible
+#   Stage 1  loading=True, do_api=False  — loader visible, script ends fast,
+#            browser commits this render, then immediately reruns
+#   Stage 2  loading=True, do_api=True   — loader still shown, API runs,
+#            browser shows Stage 1's committed render the whole time
+#   Stage 3  loading=False, results set  — results render
+#
 left, right = st.columns([2, 3], gap="large")
-loader_slot = right.empty()
 
-with left:
-    if st.session_state.get("chat_history"):
-        st.markdown('<p class="label">Anything else you want me to consider?</p>', unsafe_allow_html=True)
+if st.session_state.loading:
+    # Stages 1 & 2 — show loader, no examples
+    with left:
+        st.markdown(
+            '<p style="color:#555;font-size:0.85rem;padding-top:1rem">Hang tight…</p>',
+            unsafe_allow_html=True,
+        )
+    with right:
+        st.markdown('<p class="label">Recommendations</p>', unsafe_allow_html=True)
+        st.markdown(LOADER_HTML, unsafe_allow_html=True)
+
+    if not st.session_state.do_api:
+        # Stage 1: fast render just committed the loader — queue the API call
+        st.session_state.do_api = True
+        st.rerun()
     else:
-        st.markdown('<p class="label">What are you looking for?</p>', unsafe_allow_html=True)
+        # Stage 2: browser is showing Stage 1's loader — now run the API
+        query_to_run = st.session_state.pending_query
+        st.session_state.pending_query = ""
+        friend_tp = (st.session_state.friend_profile or {}).get("taste_profile") \
+            if st.session_state.watch_together else None
+        try:
+            watched_set = get_watched_set(st.session_state.parsed_data) \
+                if st.session_state.parsed_data else None
+            recs, replaced = get_recommendations(
+                query=query_to_run,
+                taste_profile=st.session_state.taste_profile,
+                imdb_summary=st.session_state.imdb_summary,
+                watched_set=watched_set,
+                conversation_history=st.session_state.get("chat_history") or None,
+                friend_taste_profile=friend_tp,
+                api_key=GEMINI_KEY,
+            )
+            if "chat_history" not in st.session_state:
+                st.session_state.chat_history = []
+            st.session_state.chat_history.append({"role": "user",      "content": query_to_run})
+            st.session_state.chat_history.append({"role": "assistant", "content": recs})
+            st.session_state.recommendations = recs
+            st.session_state.replaced        = replaced
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                import re as _re
+                delay = _re.search(r"retryDelay.*?(\d+)s", err)
+                delay_str = f" Try again in {delay.group(1)} seconds." if delay else ""
+                st.warning(f"⚠️ Gemini quota reached.{delay_str}")
+            else:
+                st.error(f"Gemini error: {e}")
+        finally:
+            st.session_state.loading = False
+            st.session_state.do_api  = False
+        st.rerun()
 
-    query = st.text_area(
-        "query",
-        value=st.session_state.pending_query,
-        placeholder=(
-            'e.g. "Find me a foreign murder mystery under 90 minutes"\n\n'
-            '"Something slow-burn and atmospheric for a rainy night"\n\n'
-            '"A funny horror-comedy I can watch with my roommate"'
-        ),
-        height=140,
-        label_visibility="collapsed",
-        key="query_box",
-    )
+else:
+    # Stage 0 / Stage 3 — normal render
+    with left:
+        if st.session_state.get("chat_history"):
+            st.markdown('<p class="label">Anything else you want me to consider?</p>', unsafe_allow_html=True)
+        else:
+            st.markdown('<p class="label">What are you looking for?</p>', unsafe_allow_html=True)
 
-    in_convo = bool(st.session_state.get("chat_history"))
+        query = st.text_area(
+            "query",
+            value=st.session_state.pending_query,
+            placeholder=(
+                'e.g. "Find me a foreign murder mystery under 90 minutes"\n\n'
+                '"Something slow-burn and atmospheric for a rainy night"\n\n'
+                '"A funny horror-comedy I can watch with my roommate"'
+            ),
+            height=140,
+            label_visibility="collapsed",
+            key="query_box",
+        )
 
-    if in_convo:
-        ecol1, ecol2 = st.columns([2, 1])
-        with ecol1:
-            if st.button("↩  Enter", key="enter_followup"):
-                if query.strip():
-                    st.session_state.pending_query = ""
-                    st.session_state.auto_run      = False
-                    run_recommendations(query, loader_slot)
+        in_convo = bool(st.session_state.get("chat_history"))
+
+        if in_convo:
+            ecol1, ecol2 = st.columns([2, 1])
+            with ecol1:
+                if st.button("↩  Enter", key="enter_followup"):
+                    if query.strip():
+                        st.session_state.pending_query = query.strip()
+                        st.session_state.loading       = True
+                        st.session_state.do_api        = False
+                        st.rerun()
+            with ecol2:
+                if st.button("✕  Start Over", key="start_over"):
+                    st.session_state.recommendations = None
+                    st.session_state.replaced        = []
+                    st.session_state["chat_history"] = []
                     st.rerun()
-        with ecol2:
-            if st.button("✕  Start Over", key="start_over"):
-                st.session_state.recommendations = None
-                st.session_state.replaced        = []
-                st.session_state["chat_history"] = []
+        else:
+            go = st.button("🎬  Get Recommendations", key="get_recs")
+            if go and query.strip():
+                st.session_state.pending_query = query.strip()
+                st.session_state.loading       = True
+                st.session_state.do_api        = False
                 st.rerun()
-    else:
-        go = st.button("🎬  Get Recommendations", key="get_recs")
-        if go and query.strip():
-            st.session_state.pending_query = query.strip()
-            st.session_state.auto_run      = True
-            st.rerun()
 
-    st.markdown("---")
+        st.markdown("---")
 
-    if st.session_state.recommendations and st.session_state.zip_loaded:
-        _, taste_note = parse_rec_blocks(st.session_state.recommendations)
-        if taste_note:
-            st.markdown(taste_note)
-    elif not st.session_state.auto_run and not st.session_state.do_run and not st.session_state.recommendations:
-        st.markdown('<div class="examples-block">', unsafe_allow_html=True)
-        st.markdown('<p class="label" style="font-size:0.75rem">Quick examples</p>', unsafe_allow_html=True)
-        cols = st.columns(2)
-        for i, ex in enumerate(EXAMPLES):
-            with cols[i % 2]:
-                st.markdown('<div class="example-btn">', unsafe_allow_html=True)
-                if st.button(ex, key=f"ex__{ex}"):
-                    st.session_state.pending_query = ex
-                    st.session_state.auto_run      = True
-                    st.rerun()
-                st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        if st.session_state.recommendations and st.session_state.zip_loaded:
+            _, taste_note = parse_rec_blocks(st.session_state.recommendations)
+            if taste_note:
+                st.markdown(taste_note)
+        elif not st.session_state.recommendations:
+            st.markdown('<div class="examples-block">', unsafe_allow_html=True)
+            st.markdown('<p class="label" style="font-size:0.75rem">Quick examples</p>', unsafe_allow_html=True)
+            cols = st.columns(2)
+            for i, ex in enumerate(EXAMPLES):
+                with cols[i % 2]:
+                    st.markdown('<div class="example-btn">', unsafe_allow_html=True)
+                    if st.button(ex, key=f"ex__{ex}"):
+                        st.session_state.pending_query = ex
+                        st.session_state.loading       = True
+                        st.session_state.do_api        = False
+                        st.rerun()
+                    st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-# Stage 1 — examples are now hidden (auto_run=True), queue the actual API call
-if st.session_state.auto_run and st.session_state.pending_query:
-    st.session_state.auto_run = False
-    st.session_state.do_run   = True
-    st.rerun()
+    with right:
+        st.markdown('<p class="label">Recommendations</p>', unsafe_allow_html=True)
 
-# Stage 2 — clean render (no examples) is showing; now call the API
-if st.session_state.do_run and st.session_state.pending_query:
-    run_query = st.session_state.pending_query
-    st.session_state.do_run        = False
-    st.session_state.pending_query = ""
-    friend_tp = (st.session_state.friend_profile or {}).get("taste_profile") \
-        if st.session_state.watch_together else None
-    run_recommendations(run_query, loader_slot, friend_taste_profile=friend_tp)
-    st.rerun()
+        if st.session_state.recommendations:
+            blocks, taste_note = parse_rec_blocks(st.session_state.recommendations)
 
-with right:
-    st.markdown('<p class="label">Recommendations</p>', unsafe_allow_html=True)
+            history = st.session_state.get("chat_history", [])
+            prior_queries = [m["content"] for m in history if m["role"] == "user"][:-1]
+            if prior_queries:
+                st.markdown(
+                    '<p style="font-size:0.72rem;color:#555;margin-bottom:4px">Previous queries:</p>',
+                    unsafe_allow_html=True,
+                )
+                pills = " ".join(
+                    f'<span style="background:#1a1a20;border:1px solid #2c2c38;border-radius:3px;'
+                    f'padding:2px 8px;font-size:0.72rem;color:#888;margin:2px;display:inline-block">{q}</span>'
+                    for q in prior_queries
+                )
+                st.markdown(pills, unsafe_allow_html=True)
+                st.markdown("<hr style='border-color:#1e1e26;margin:0.5rem 0'>", unsafe_allow_html=True)
 
-    if st.session_state.recommendations:
-        blocks, taste_note = parse_rec_blocks(st.session_state.recommendations)
+            for block in blocks:
+                try:
+                    result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_READ_TOKEN)
+                    poster_url = result["poster_url"]
+                    providers  = result["providers"]
+                except Exception:
+                    poster_url = None
+                    providers  = []
+                col_img, col_text = st.columns([1, 4], gap="medium")
+                with col_img:
+                    if poster_url:
+                        st.markdown(
+                            f'<img src="{poster_url}" style="width:100%;border-radius:4px;">',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            '<div style="background:#1e1e26;border-radius:4px;'
+                            'aspect-ratio:2/3;display:flex;align-items:center;'
+                            'justify-content:center;color:#444;font-size:1.5rem;">🎬</div>',
+                            unsafe_allow_html=True,
+                        )
+                    if providers:
+                        logos_html = "".join(
+                            f'<img src="{p["logo_url"]}" title="{p["name"]}" '
+                            f'style="width:24px;height:24px;border-radius:4px;margin:2px" />' if p["logo_url"]
+                            else f'<span style="font-size:0.65rem;color:#888">{p["name"]}</span>'
+                            for p in providers[:6]
+                        )
+                        st.markdown(
+                            f'<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:2px">{logos_html}</div>',
+                            unsafe_allow_html=True,
+                        )
+                with col_text:
+                    st.markdown(block["body"])
+                st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0'>",
+                            unsafe_allow_html=True)
 
-        # Conversation history: show prior queries as collapsed pills
-        history = st.session_state.get("chat_history", [])
-        prior_queries = [m["content"] for m in history if m["role"] == "user"][:-1]
-        if prior_queries:
-            st.markdown(
-                '<p style="font-size:0.72rem;color:#555;margin-bottom:4px">Previous queries:</p>',
-                unsafe_allow_html=True,
-            )
-            pills = " ".join(
-                f'<span style="background:#1a1a20;border:1px solid #2c2c38;border-radius:3px;'
-                f'padding:2px 8px;font-size:0.72rem;color:#888;margin:2px;display:inline-block">{q}</span>'
-                for q in prior_queries
-            )
-            st.markdown(pills, unsafe_allow_html=True)
-            st.markdown("<hr style='border-color:#1e1e26;margin:0.5rem 0'>", unsafe_allow_html=True)
+            if st.session_state.get("replaced"):
+                replaced_str = ", ".join(t.title() for t in st.session_state.replaced)
+                st.info(f"♻️ Replaced already-seen film(s): {replaced_str}")
 
-        for block in blocks:
-            try:
-                result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_READ_TOKEN)
-                poster_url = result["poster_url"]
-                providers  = result["providers"]
-            except Exception:
-                poster_url = None
-                providers  = []
-            col_img, col_text = st.columns([1, 4], gap="medium")
-            with col_img:
-                if poster_url:
-                    st.markdown(
-                        f'<img src="{poster_url}" style="width:100%;border-radius:4px;">',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        '<div style="background:#1e1e26;border-radius:4px;'
-                        'aspect-ratio:2/3;display:flex;align-items:center;'
-                        'justify-content:center;color:#444;font-size:1.5rem;">🎬</div>',
-                        unsafe_allow_html=True,
-                    )
-                # Streaming provider logos
-                if providers:
-                    logos_html = "".join(
-                        f'<img src="{p["logo_url"]}" title="{p["name"]}" '
-                        f'style="width:24px;height:24px;border-radius:4px;margin:2px" />' if p["logo_url"]
-                        else f'<span style="font-size:0.65rem;color:#888">{p["name"]}</span>'
-                        for p in providers[:6]
-                    )
-                    st.markdown(
-                        f'<div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:2px">{logos_html}</div>',
-                        unsafe_allow_html=True,
-                    )
-            with col_text:
-                st.markdown(block["body"])
-            st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0'>",
-                        unsafe_allow_html=True)
-
-        if st.session_state.get("replaced"):
-            replaced_str = ", ".join(t.title() for t in st.session_state.replaced)
-            st.info(f"♻️ Replaced already-seen film(s): {replaced_str}")
-
-
-    else:
-        st.markdown("""
-        <div class="recs-empty">
-          <p class="recs-empty-title">LIGHTS · CAMERA · ASK</p>
-          <p class="recs-empty-sub">Type a query or pick an example on the left,
-          then hit <strong>Get Recommendations</strong>.</p>
-        </div>
-        """, unsafe_allow_html=True)
-
+        else:
+            st.markdown("""
+            <div class="recs-empty">
+              <p class="recs-empty-title">LIGHTS · CAMERA · ASK</p>
+              <p class="recs-empty-sub">Type a query or pick an example on the left,
+              then hit <strong>Get Recommendations</strong>.</p>
+            </div>
+            """, unsafe_allow_html=True)
 if st.session_state.taste_profile:
     with st.expander("📄 View taste profile sent to Gemini"):
         st.code(st.session_state.taste_profile, language=None)
