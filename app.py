@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_watched_set
 from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
 from recommender import get_recommendations, parse_rec_blocks
-from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile
+import extra_streamlit_components as stx
+from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile, sign_in_with_google, get_session_from_tokens
 
 load_dotenv()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -38,6 +39,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# Cookie manager — must be instantiated before any other rendering
+cookie_manager = stx.CookieManager(key="ww_cookies")
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CSS
@@ -125,6 +129,17 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 .ghost-btn .stButton > button:hover {
     color: #e8e2d8 !important; border-color: #555 !important;
     background: #1a1a20 !important;
+}
+
+.google-btn .stButton > button {
+    background: #fff !important; color: #3c3c3c !important;
+    border: 1px solid #ddd !important; border-radius: 3px !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.9rem !important; letter-spacing: 0.01em !important;
+    padding: 0.45rem 1.4rem !important;
+}
+.google-btn .stButton > button:hover {
+    background: #f5f5f5 !important; border-color: #bbb !important;
 }
 
 /* ── Auth card ── */
@@ -254,6 +269,34 @@ for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
+# ── Cookie helpers ────────────────────────────────────────────────────────────
+def save_auth_cookie(access_token: str, refresh_token: str, email: str):
+    """Persist session tokens in browser cookies (30-day expiry)."""
+    import datetime
+    exp = datetime.datetime.now() + datetime.timedelta(days=30)
+    cookie_manager.set("ww_access_token",  access_token,  expires_at=exp)
+    cookie_manager.set("ww_refresh_token", refresh_token, expires_at=exp)
+    cookie_manager.set("ww_email",         email,         expires_at=exp)
+
+def clear_auth_cookie():
+    for name in ("ww_access_token", "ww_refresh_token", "ww_email"):
+        try:
+            cookie_manager.delete(name)
+        except Exception:
+            pass
+
+# ── Restore session from cookie on every page load ────────────────────────────
+if not st.session_state.user_email:
+    _cat = cookie_manager.get("ww_access_token")
+    _crt = cookie_manager.get("ww_refresh_token")
+    if _cat and _crt:
+        try:
+            result = get_session_from_tokens(_cat, _crt)
+            if result["user"]:
+                st.session_state.user_email = result["user"].email
+        except Exception:
+            clear_auth_cookie()
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  DB LOAD — once per session if signed in
 # ─────────────────────────────────────────────────────────────────────────────
@@ -274,6 +317,29 @@ if user_email and not st.session_state.profile_loaded_from_db and not st.session
         pass
     st.session_state.profile_loaded_from_db = True
 
+# ── Handle Google OAuth callback (tokens in query params) ─────────────────────
+if not st.session_state.user_email:
+    _at = st.query_params.get("access_token")
+    _rt = st.query_params.get("refresh_token")
+    if _at and _rt:
+        result = get_session_from_tokens(_at, _rt)
+        if result["user"]:
+            st.session_state.user_email = result["user"].email
+            st.session_state.auth_open  = False
+            save_auth_cookie(_at, _rt, result["user"].email)
+            st.query_params.clear()
+            # Check if they already have a saved profile
+            try:
+                existing = load_profile(result["user"].email)
+            except Exception:
+                existing = None
+            if not existing or not existing.get("taste_profile"):
+                # New user — require upload
+                st.session_state.auth_open  = True
+                st.session_state.auth_mode  = "upload_required"
+                st.session_state.profile_loaded_from_db = True
+            st.rerun()
+
 EXAMPLES = [
     "A romantic comedy with heart",
     "Foreign murder mystery under 90 minutes",
@@ -291,8 +357,67 @@ LOADER_HTML = """
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  HELPER
+#  HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+def parse_and_enrich_zip(uploaded_zip):
+    """Parse a Letterboxd ZIP, enrich with TMDB, and store in session state.
+    Returns True on success, False on parse error."""
+    with st.spinner("Parsing your Letterboxd export…"):
+        try:
+            data = parse_letterboxd_zip(uploaded_zip)
+            st.session_state.parsed_data = data
+        except Exception as e:
+            st.error(f"ZIP parse error: {e}")
+            return False
+
+    data    = st.session_state.parsed_data
+    ratings = data.get("ratings", [])
+    enriched, hits = [], 0
+
+    if ratings:
+        n        = min(100, len(ratings))
+        progress = st.progress(0, text=f"Fetching TMDB data for {n} films…")
+        seen_set, idx = set(), 0
+        for film in ratings:
+            if idx >= n:
+                break
+            name, year = film["name"], film["year"]
+            if name.lower() in seen_set:
+                continue
+            seen_set.add(name.lower())
+            meta     = fetch_film_metadata(name, year, TMDB_READ_TOKEN)
+            combined = {"title": name, "year": year, "rating": film.get("rating")}
+            if meta:
+                hits += 1
+                combined.update(meta)
+            enriched.append(combined)
+            idx += 1
+            progress.progress(idx / n, text=f"TMDB ({idx}/{n}): {name}…")
+            time.sleep(0.05)
+        progress.empty()
+
+    profile = data["profile"]
+    lists   = data["lists"]
+    profile_meta = {
+        "given_name":      profile.get("given_name", ""),
+        "family_name":     profile.get("family_name", ""),
+        "username":        profile.get("username", ""),
+        "ratings_count":   len(ratings),
+        "watched_count":   len(data.get("watched", [])),
+        "watchlist_count": len(data.get("watchlist", [])),
+        "list_names":      list(lists.keys())[:8],
+    }
+
+    st.session_state.enriched_films  = enriched
+    st.session_state.imdb_summary    = build_enrichment_summary(enriched)
+    st.session_state.taste_profile   = build_taste_profile(data, enriched)
+    st.session_state.profile_meta    = profile_meta
+    st.session_state.zip_loaded      = True
+    st.session_state.skip_db_load    = False
+    st.session_state.recommendations = None
+    return True
+
+
 def run_recommendations(query: str, loader_slot, friend_taste_profile: str | None = None):
     loader_slot.markdown(LOADER_HTML, unsafe_allow_html=True)
     try:
@@ -358,7 +483,7 @@ if shared_slug:
         st.stop()
 
     fmeta       = fp.get("profile_meta") or {}
-    fname       = " ".join(filter(None, [fmeta.get("given_name"), fmeta.get("family_name")])) or fp["username"]
+    fname       = fp["username"]
     frating     = fmeta.get("ratings_count", 0)
     fwatched    = fmeta.get("watched_count", 0)
     fwatchlist  = fmeta.get("watchlist_count", 0)
@@ -371,8 +496,8 @@ if shared_slug:
 
     st.markdown(f"""
     <div class="profile-bar">
-      <p class="profile-bar-name">{fname}</p>
-      <p class="profile-bar-sub">@{fp["username"]} &nbsp;·&nbsp;
+      <p class="profile-bar-name">@{fname}</p>
+      <p class="profile-bar-sub">
         <span>{frating}</span> rated &nbsp;·&nbsp;
         <span>{fwatched}</span> watched &nbsp;·&nbsp;
         <span>{fwatchlist}</span> watchlist
@@ -509,6 +634,7 @@ if user_email:
         )
     with ucol2:
         if st.button("Sign out", key="signout"):
+            clear_auth_cookie()
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
@@ -516,21 +642,42 @@ if user_email:
 else:
     _, rbtn = st.columns([6, 1])
     with rbtn:
-        st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
-        if st.button("Sign in", key="open_auth"):
-            st.session_state.auth_open = not st.session_state.auth_open
-            st.rerun()
+        if not st.session_state.auth_open:
+            st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
+            if st.button("Sign in", key="open_auth"):
+                st.session_state.auth_open = not st.session_state.auth_open
+                st.rerun()
 
 # ── Auth panel (shown when Sign in is clicked) ────────────────────────────────
 if not user_email and st.session_state.auth_open:
     _, mid, _ = st.columns([1, 1.4, 1])
     with mid:
+        _, xcol = st.columns([5, 1])
+        with xcol:
+            st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
+            if st.button("✕", key="close_auth"):
+                st.session_state.auth_open = False
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
         mode = st.session_state.auth_mode
 
         if mode == "login":
-            #st.markdown('<div class="auth-card">', unsafe_allow_html=True)
             st.markdown('<p class="auth-title">Sign In</p>', unsafe_allow_html=True)
             st.markdown('<p class="auth-sub">Welcome back — sign in to load your saved taste profile.</p>', unsafe_allow_html=True)
+
+            # Google button
+            st.markdown('<div class="google-btn">', unsafe_allow_html=True)
+            if st.button("🔵  Continue with Google", key="google_login"):
+                result = sign_in_with_google(BASE_URL)
+                if result["error"]:
+                    st.error(result["error"])
+                elif result["url"]:
+                    st.markdown(f'<meta http-equiv="refresh" content="0; url={result["url"]}">', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            st.markdown('<p style="text-align:center;color:#333;font-size:0.75rem;margin:0.6rem 0">— or —</p>', unsafe_allow_html=True)
+
             email    = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
             if st.button("Sign In", key="do_login"):
@@ -543,7 +690,7 @@ if not user_email and st.session_state.auth_open:
                     else:
                         st.session_state.user_email = result["user"].email
                         st.session_state.auth_open  = False
-                        # If they uploaded a ZIP before signing in, save it now
+                        save_auth_cookie(result["session"].access_token, result["session"].refresh_token, result["user"].email)
                         if st.session_state.get("taste_profile") and st.session_state.get("profile_meta"):
                             try:
                                 save_profile(
@@ -557,7 +704,6 @@ if not user_email and st.session_state.auth_open:
                             except Exception:
                                 pass
                         st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
             st.markdown('<div class="ghost-btn" style="max-width:420px;margin:0.5rem auto">', unsafe_allow_html=True)
             if st.button("Create Account →", key="switch_to_signup"):
                 st.session_state.auth_mode = "signup"
@@ -568,6 +714,19 @@ if not user_email and st.session_state.auth_open:
             st.markdown('<div class="auth-card">', unsafe_allow_html=True)
             st.markdown('<p class="auth-title">Create Account</p>', unsafe_allow_html=True)
             st.markdown('<p class="auth-sub">Free forever. Your Letterboxd data stays private.</p>', unsafe_allow_html=True)
+
+            # Google button
+            st.markdown('<div class="google-btn">', unsafe_allow_html=True)
+            if st.button("🔵  Sign up with Google", key="google_signup"):
+                result = sign_in_with_google(BASE_URL)
+                if result["error"]:
+                    st.error(result["error"])
+                elif result["url"]:
+                    st.markdown(f'<meta http-equiv="refresh" content="0; url={result["url"]}">', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            st.markdown('<p style="text-align:center;color:#333;font-size:0.75rem;margin:0.6rem 0">— or —</p>', unsafe_allow_html=True)
+
             email     = st.text_input("Email", key="signup_email")
             password  = st.text_input("Password", type="password", key="signup_password", help="At least 6 characters.")
             password2 = st.text_input("Confirm password", type="password", key="signup_password2")
@@ -584,22 +743,10 @@ if not user_email and st.session_state.auth_open:
                         st.error(result["error"])
                     else:
                         st.session_state.user_email = result["user"].email
-                        st.session_state.auth_open  = False
-                        st.session_state.profile_loaded_from_db = True  # nothing in DB yet for new account
-                        # If they uploaded a ZIP before signing up, save it now
-                        if st.session_state.get("taste_profile") and st.session_state.get("profile_meta"):
-                            try:
-                                save_profile(
-                                    email=result["user"].email,
-                                    username=st.session_state.profile_meta.get("username", ""),
-                                    taste_profile=st.session_state.taste_profile,
-                                    enriched_films=st.session_state.enriched_films or [],
-                                    imdb_summary=st.session_state.imdb_summary or "",
-                                    profile_meta=st.session_state.profile_meta,
-                                )
-                            except Exception:
-                                pass
-                        st.success("Account created! Welcome to Watchwise.")
+                        st.session_state.profile_loaded_from_db = True
+                        st.session_state.auth_mode  = "upload_required"
+                        if result.get("session"):
+                            save_auth_cookie(result["session"].access_token, result["session"].refresh_token, result["user"].email)
                         st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown('<div class="ghost-btn" style="max-width:420px;margin:0.5rem auto">', unsafe_allow_html=True)
@@ -607,6 +754,42 @@ if not user_email and st.session_state.auth_open:
                 st.session_state.auth_mode = "login"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
+
+        if mode == "upload_required":
+            st.markdown('<p class="auth-title">One Last Step</p>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="auth-sub">Upload your Letterboxd export to build your taste profile. '
+                'This is what makes Watchwise actually good.</p>',
+                unsafe_allow_html=True,
+            )
+            st.caption("letterboxd.com → Settings → Import & Export → Export Your Data — or go directly to [letterboxd.com/data/export/](https://letterboxd.com/data/export/)")
+            onboard_zip = st.file_uploader("ZIP", type=["zip"], label_visibility="collapsed", key="onboard_zip")
+            if st.button("⚙️  Build My Taste Profile", key="onboard_parse"):
+                if not onboard_zip:
+                    st.error("Please upload your Letterboxd ZIP first.")
+                else:
+                    success = parse_and_enrich_zip(onboard_zip)
+                    if success:
+                        _slug = st.session_state.profile_meta.get("username", "")
+                        try:
+                            save_profile(
+                                email=st.session_state.user_email,
+                                username=_slug,
+                                taste_profile=st.session_state.taste_profile,
+                                enriched_films=st.session_state.enriched_films or [],
+                                imdb_summary=st.session_state.imdb_summary or "",
+                                profile_meta=st.session_state.profile_meta,
+                                is_public=True,
+                                slug=_slug,
+                            )
+                            st.session_state.profile_slug      = _slug
+                            st.session_state.profile_is_public = True
+                            st.session_state.unsaved           = False
+                        except Exception:
+                            st.session_state.unsaved = True
+                        st.session_state.auth_open = False
+                        st.session_state.auth_mode = "login"
+                        st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  UPLOAD / PROFILE
@@ -621,81 +804,26 @@ if not st.session_state.zip_loaded:
         if not uploaded_zip:
             st.error("Please upload your Letterboxd ZIP first.")
         else:
-            with st.spinner("Parsing your Letterboxd export…"):
-                try:
-                    data = parse_letterboxd_zip(uploaded_zip)
-                    st.session_state.parsed_data = data
-                except Exception as e:
-                    st.error(f"ZIP parse error: {e}")
-                    st.stop()
-
-            data     = st.session_state.parsed_data
-            ratings  = data.get("ratings", [])
-            enriched = []
-            hits     = 0
-
-            if ratings:
-                n        = min(100, len(ratings))
-                progress = st.progress(0, text=f"Fetching TMDB data for {n} films…")
-                seen_set = set()
-                idx      = 0
-                for film in ratings:
-                    if idx >= n:
-                        break
-                    name = film["name"]
-                    year = film["year"]
-                    if name.lower() in seen_set:
-                        continue
-                    seen_set.add(name.lower())
-                    meta     = fetch_film_metadata(name, year, TMDB_READ_TOKEN)
-                    combined = {"title": name, "year": year, "rating": film.get("rating")}
-                    if meta:
-                        hits += 1
-                        combined.update(meta)
-                    enriched.append(combined)
-                    idx += 1
-                    progress.progress(idx / n, text=f"TMDB ({idx}/{n}): {name}…")
-                    time.sleep(0.05)
-                progress.empty()
-
-            profile = data["profile"]
-            lists   = data["lists"]
-            profile_meta = {
-                "given_name":      profile.get("given_name", ""),
-                "family_name":     profile.get("family_name", ""),
-                "username":        profile.get("username", ""),
-                "ratings_count":   len(ratings),
-                "watched_count":   len(data.get("watched", [])),
-                "watchlist_count": len(data.get("watchlist", [])),
-                "list_names":      list(lists.keys())[:8],
-            }
-
-            st.session_state.enriched_films  = enriched
-            st.session_state.imdb_summary    = build_enrichment_summary(enriched)
-            st.session_state.taste_profile   = build_taste_profile(data, enriched)
-            st.session_state.profile_meta    = profile_meta
-            st.session_state.zip_loaded      = True
-            st.session_state.skip_db_load    = False
-            st.session_state.recommendations = None
-
-            st.session_state.unsaved = True   # prompt user to save
-            st.rerun()
+            success = parse_and_enrich_zip(uploaded_zip)
+            if success:
+                st.session_state.unsaved = True
+                st.rerun()
 
 else:
     # Profile bar
     if st.session_state.parsed_data:
         data    = st.session_state.parsed_data
         profile = data["profile"]
-        username       = profile.get("username") or profile.get("given_name") or "User"
-        name_str       = " ".join(filter(None, [profile.get("given_name"), profile.get("family_name")])) or username
+        username       = profile.get("username") or "User"
+        name_str       = username
         ratings_count  = len(data["ratings"])
         watched_count  = len(data["watched"])
         watchlist_count = len(data["watchlist"])
         list_names     = list(data["lists"].keys())[:8]
     else:
         meta           = st.session_state.profile_meta or {}
-        username       = meta.get("username") or meta.get("given_name") or "User"
-        name_str       = " ".join(filter(None, [meta.get("given_name"), meta.get("family_name")])) or username
+        username       = meta.get("username") or "User"
+        name_str       = username
         ratings_count  = meta.get("ratings_count", 0)
         watched_count  = meta.get("watched_count", 0)
         watchlist_count = meta.get("watchlist_count", 0)
@@ -708,8 +836,8 @@ else:
 
     st.markdown(f"""
     <div class="profile-bar">
-      <p class="profile-bar-name">{name_str}</p>
-      <p class="profile-bar-sub">@{username} &nbsp;·&nbsp;
+      <p class="profile-bar-name">@{name_str}</p>
+      <p class="profile-bar-sub">
         <span>{ratings_count}</span> rated &nbsp;·&nbsp;
         <span>{watched_count}</span> watched &nbsp;·&nbsp;
         <span>{watchlist_count}</span> watchlist

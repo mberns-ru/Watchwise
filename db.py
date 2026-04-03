@@ -37,6 +37,31 @@ def sign_in(email: str, password: str) -> dict:
         return {"user": None, "session": None, "error": msg}
 
 
+def sign_in_with_google(redirect_url: str) -> dict:
+    """Return the Google OAuth redirect URL."""
+    try:
+        client = get_client()
+        res = client.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {"redirect_to": redirect_url},
+        })
+        return {"url": res.url, "error": None}
+    except Exception as e:
+        return {"url": None, "error": str(e)}
+
+
+def get_session_from_tokens(access_token: str, refresh_token: str) -> dict:
+    """Exchange OAuth tokens for a session after Google redirect."""
+    try:
+        client = get_client()
+        res = client.auth.set_session(access_token, refresh_token)
+        if res.user:
+            return {"user": res.user, "error": None}
+        return {"user": None, "error": "Could not establish session."}
+    except Exception as e:
+        return {"user": None, "error": str(e)}
+
+
 def sign_out(access_token: str):
     try:
         client = get_client()
@@ -97,7 +122,7 @@ def set_profile_public(email: str, is_public: bool, slug: str | None = None):
 
 
 def get_public_profile(slug: str) -> dict | None:
-    """Fetch a public profile by its slug (Letterboxd username)."""
+    """Fetch a public profile by its slug."""
     client = get_client()
     res = (
         client.table("profiles")
