@@ -11,7 +11,7 @@ from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_wat
 from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
 from recommender import get_recommendations, parse_rec_blocks
 import extra_streamlit_components as stx
-from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile, sign_in_with_google, get_session_from_tokens, search_profiles
+from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile, search_profiles, get_session_from_tokens
 
 load_dotenv()
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -168,17 +168,6 @@ div:has(> [data-testid="stButton"] > button[kind="primary"]:not([id*="home_nav"]
 .search-result-btn .stButton > button:hover {
     background: #1a1a20 !important; color: #fff !important;
     border-bottom-color: #2c2c38 !important;
-}
-
-.google-btn .stButton > button {
-    background: #fff !important; color: #3c3c3c !important;
-    border: 1px solid #ddd !important; border-radius: 3px !important;
-    font-family: 'DM Sans', sans-serif !important;
-    font-size: 0.9rem !important; letter-spacing: 0.01em !important;
-    padding: 0.45rem 1.4rem !important;
-}
-.google-btn .stButton > button:hover {
-    background: #f5f5f5 !important; border-color: #bbb !important;
 }
 
 /* Home button — red but DM Sans not Bebas */
@@ -366,35 +355,13 @@ if user_email and not st.session_state.profile_loaded_from_db and not st.session
         pass
     st.session_state.profile_loaded_from_db = True
 
-# ── Handle Google OAuth callback (tokens in query params) ─────────────────────
+# ── Handle signout query param ────────────────────────────────────────────────
 if st.query_params.get("signout"):
     clear_auth_cookie()
     for k in list(st.session_state.keys()):
         del st.session_state[k]
     st.query_params.clear()
     st.rerun()
-
-if not st.session_state.user_email:
-    _at = st.query_params.get("access_token")
-    _rt = st.query_params.get("refresh_token")
-    if _at and _rt:
-        result = get_session_from_tokens(_at, _rt)
-        if result["user"]:
-            st.session_state.user_email = result["user"].email
-            st.session_state.auth_open  = False
-            save_auth_cookie(_at, _rt, result["user"].email)
-            st.query_params.clear()
-            # Check if they already have a saved profile
-            try:
-                existing = load_profile(result["user"].email)
-            except Exception:
-                existing = None
-            if not existing or not existing.get("taste_profile"):
-                # New user — require upload
-                st.session_state.auth_open  = True
-                st.session_state.auth_mode  = "upload_required"
-                st.session_state.profile_loaded_from_db = True
-            st.rerun()
 
 EXAMPLES = [
     "A romantic comedy with heart",
@@ -771,18 +738,6 @@ if not user_email and st.session_state.auth_open:
             st.markdown('<p class="auth-title">Sign In</p>', unsafe_allow_html=True)
             st.markdown('<p class="auth-sub">Welcome back — sign in to load your saved taste profile.</p>', unsafe_allow_html=True)
 
-            # Google button
-            st.markdown('<div class="google-btn">', unsafe_allow_html=True)
-            if st.button("🔵  Continue with Google", key="google_login"):
-                result = sign_in_with_google(f"{BASE_URL}/")
-                if result["error"]:
-                    st.error(result["error"])
-                elif result["url"]:
-                    st.markdown(f'<meta http-equiv="refresh" content="0; url={result["url"]}">', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-            st.markdown('<p style="text-align:center;color:#333;font-size:0.75rem;margin:0.6rem 0">— or —</p>', unsafe_allow_html=True)
-
             email    = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
             if st.button("Sign In", key="do_login"):
@@ -817,18 +772,6 @@ if not user_email and st.session_state.auth_open:
 
         else:  # signup
             st.markdown('<p class="auth-title">Create Account</p>', unsafe_allow_html=True)
-
-            # Google button
-            st.markdown('<div class="google-btn">', unsafe_allow_html=True)
-            if st.button("🔵  Sign up with Google", key="google_signup"):
-                result = sign_in_with_google(f"{BASE_URL}/")
-                if result["error"]:
-                    st.error(result["error"])
-                elif result["url"]:
-                    st.markdown(f'<meta http-equiv="refresh" content="0; url={result["url"]}">', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-            st.markdown('<p style="text-align:center;color:#333;font-size:0.75rem;margin:0.6rem 0">— or —</p>', unsafe_allow_html=True)
 
             email     = st.text_input("Email", key="signup_email")
             password  = st.text_input("Password", type="password", key="signup_password", help="At least 6 characters.")
