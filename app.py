@@ -132,6 +132,30 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
     background: #1a1a20 !important;
 }
 
+/* Sign out as a text link */
+div:has(> [data-testid="stButton"] > button[kind="primary"]:not([id*="home_nav"])):has(+ div + div p) button,
+[data-testid="stButton"]:has(button[kind="primary"]) + * {
+    display: none;
+}
+.signout-link .stButton > button {
+    background: transparent !important;
+    color: #555 !important;
+    border: none !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.68rem !important;
+    letter-spacing: 0.03em !important;
+    padding: 0 0 !important;
+    width: auto !important;
+    text-decoration: underline !important;
+    text-align: right !important;
+    min-height: 0 !important;
+    height: auto !important;
+}
+.signout-link .stButton > button:hover {
+    color: #d22323 !important;
+    background: transparent !important;
+}
+
 .search-result-btn .stButton > button {
     background: transparent !important; color: #e8e2d8 !important;
     border: none !important; border-bottom: 1px solid #1e1e26 !important;
@@ -155,6 +179,14 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 }
 .google-btn .stButton > button:hover {
     background: #f5f5f5 !important; border-color: #bbb !important;
+}
+
+/* Home button — red but DM Sans not Bebas */
+[data-testid="stButton"][id*="home_nav"] > button,
+div:has(> [data-testid="stButton"] button[kind="secondary"]#home_nav) button {
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 0.82rem !important;
+    letter-spacing: 0.04em !important;
 }
 
 /* ── Auth card ── */
@@ -274,6 +306,7 @@ defaults = {
     "unsaved":                False,
     "auth_open":              False,
     "search_open":            False,
+    "search_key":             0,
     # Sharing
     "profile_is_public":      True,
     "profile_slug":           None,
@@ -334,6 +367,13 @@ if user_email and not st.session_state.profile_loaded_from_db and not st.session
     st.session_state.profile_loaded_from_db = True
 
 # ── Handle Google OAuth callback (tokens in query params) ─────────────────────
+if st.query_params.get("signout"):
+    clear_auth_cookie()
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.query_params.clear()
+    st.rerun()
+
 if not st.session_state.user_email:
     _at = st.query_params.get("access_token")
     _rt = st.query_params.get("refresh_token")
@@ -469,50 +509,60 @@ def run_recommendations(query: str, loader_slot, friend_taste_profile: str | Non
     loader_slot.empty()
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  HEADER
+#  NAVBAR  (single row, renders on ALL pages before st.stop)
 # ─────────────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div class="ww-header">
-  <a href="{BASE_URL}" target="_self" style="text-decoration:none">
-    <p class="ww-logo">WATCHWISE<span class="rec-dot"></span></p>
-  </a>
-  <p class="ww-tagline">AI-Backed Movie Suggestions</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ── Top nav: auth + search (renders on ALL pages before st.stop) ──────────────
 _display_name = (
     st.session_state.profile_slug
     or (st.session_state.profile_meta or {}).get("username")
     or user_email or ""
 )
+shared_slug_check = st.query_params.get("u")
+
 if user_email:
-    _n1, _n2, _n3 = st.columns([2, 1.2, 0.8])
-    with _n1:
+    _logo_col, _search_col, _auth_col = st.columns([1.2, 2.5, 2])
+else:
+    _logo_col, _, _btn_col = st.columns([1.2, 3.5, 0.8])
+
+with _logo_col:
+    _back = f"← @{shared_slug_check}" if shared_slug_check else ""
+    st.markdown(
+        f'<a href="{BASE_URL}" target="_self" style="text-decoration:none">'
+        f'<span style="font-family:\'Bebas Neue\',sans-serif;font-size:2.2rem;'
+        f'letter-spacing:0.08em;color:#fff;line-height:1">'
+        f'WATCHWISE<span class="rec-dot" style="width:11px;height:11px"></span>'
+        f'</span></a>',
+        unsafe_allow_html=True,
+    )
+
+if user_email:
+    with _search_col:
         search_query = st.text_input(
             "search_users",
             placeholder="🔍  Find a user to watch together…",
             label_visibility="collapsed",
-            key="user_search_box",
+            key=f"user_search_box_{st.session_state.search_key}",
         )
-    with _n2:
-        st.markdown(
-            f'<p style="font-size:0.75rem;color:#666;margin:0;padding-top:8px;text-align:right">'
-            f'Logged in as: <span style="color:#aaa">@{_display_name}</span></p>',
-            unsafe_allow_html=True,
-        )
-    with _n3:
-        st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
-        if st.button("Sign out", key="signout"):
-            clear_auth_cookie()
-            for k in list(st.session_state.keys()):
-                del st.session_state[k]
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+    with _auth_col:
+        _text_col, _home_col = st.columns([1.4, 1])
+        with _text_col:
+            st.markdown(
+                f'<div style="text-align:right;padding-top:4px">'
+                f'<span style="font-size:0.72rem;color:#666">Signed in as '
+                f'<span style="color:#aaa">@{_display_name}</span></span><br>'
+                f'<a href="?signout=1" target="_self" style="font-size:0.68rem;'
+                f'color:#555;text-decoration:underline">Sign out</a>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with _home_col:
+            if st.button("HOME 👽", key="home_nav"):
+                st.session_state.search_key += 1
+                st.query_params.clear()
+                st.rerun()
 
     if search_query and search_query.strip():
         _results = search_profiles(search_query.strip())
-        _sc, _ = st.columns([2, 2])
+        _, _sc, _ = st.columns([1.2, 2.5, 2])
         with _sc:
             if _results:
                 st.markdown(
@@ -526,6 +576,7 @@ if user_email:
                         f"@{_r['username']}  ·  {_r['ratings_count']} rated",
                         key=f"sr_{_r['slug']}",
                     ):
+                        st.session_state.search_key += 1
                         st.query_params["u"] = _r["slug"]
                         st.rerun()
                     st.markdown('</div>', unsafe_allow_html=True)
@@ -533,13 +584,14 @@ if user_email:
             else:
                 st.caption("No users found.")
 else:
-    _, rbtn = st.columns([6, 1])
-    with rbtn:
+    with _btn_col:
         if not st.session_state.auth_open:
             st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
             if st.button("Sign in", key="open_auth"):
                 st.session_state.auth_open = not st.session_state.auth_open
                 st.rerun()
+
+st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0 1rem'>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  SHARED PROFILE VIEW  (?u=username)
@@ -550,15 +602,6 @@ if shared_slug:
     viewing_own = my_username.lower() == shared_slug.lower()
 
     # ── Nav bar on shared profile page ───────────────────────────────────────
-    hcol, _ = st.columns([1, 5])
-    with hcol:
-        st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
-        if st.button("← Home", key="home_btn"):
-            st.session_state.search_open = False
-            st.query_params.clear()
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
-
     if viewing_own:
         st.info("This is your own shareable profile link. Others will see it like this:")
 
@@ -648,19 +691,18 @@ if shared_slug:
                     sloader.empty()
                 st.rerun()
 
-        if not viewing_own:
-            st.markdown("<hr>", unsafe_allow_html=True)
-            st.markdown(
-                f'<p style="font-size:0.75rem;color:#555">Want recs based on <em>your</em> taste?'
-                f' <a href="/" style="color:#d22323">Go home ↗</a></p>',
-                unsafe_allow_html=True,
-            )
+        st.markdown("---")
+        shared_recs_for_note = st.session_state.get("shared_recs")
+        if shared_recs_for_note:
+            _, taste_note_left = parse_rec_blocks(shared_recs_for_note)
+            if taste_note_left:
+                st.markdown(taste_note_left)
 
     with sright:
         st.markdown('<p class="label">Recommendations</p>', unsafe_allow_html=True)
         shared_recs = st.session_state.get("shared_recs")
         if shared_recs:
-            blocks, taste_note = parse_rec_blocks(shared_recs)
+            blocks, _ = parse_rec_blocks(shared_recs)
             for block in blocks:
                 try:
                     result     = fetch_poster_and_providers(block["title"], block["year"], TMDB_READ_TOKEN)
@@ -697,8 +739,6 @@ if shared_slug:
                 with col_text:
                     st.markdown(block["body"])
                 st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0'>", unsafe_allow_html=True)
-            if taste_note:
-                st.markdown(taste_note)
         else:
             st.markdown("""
             <div class="recs-empty">
@@ -776,9 +816,7 @@ if not user_email and st.session_state.auth_open:
             st.markdown('</div>', unsafe_allow_html=True)
 
         else:  # signup
-            st.markdown('<div class="auth-card">', unsafe_allow_html=True)
             st.markdown('<p class="auth-title">Create Account</p>', unsafe_allow_html=True)
-            st.markdown('<p class="auth-sub">Free forever. Your Letterboxd data stays private.</p>', unsafe_allow_html=True)
 
             # Google button
             st.markdown('<div class="google-btn">', unsafe_allow_html=True)
@@ -951,9 +989,11 @@ else:
             if _slug:
                 share_url = f"{BASE_URL}/?u={_slug}"
                 st.markdown(
+                    f'<p style="font-size:0.72rem;color:#555;margin:0 0 4px 0;'
+                    f'letter-spacing:0.06em;text-transform:uppercase">Share your profile:</p>'
                     f'<div style="display:inline-flex;align-items:center;gap:8px;'
                     f'background:#1a1a20;border:1px solid #2c2c38;border-radius:4px;'
-                    f'padding:6px 12px;margin-top:4px">'
+                    f'padding:6px 12px">'
                     f'<span style="color:#d22323;font-size:0.85rem">🔗</span>'
                     f'<a href="{share_url}" target="_blank" style="color:#c8c2b8;'
                     f'font-size:0.78rem;font-family:monospace;text-decoration:none;'
