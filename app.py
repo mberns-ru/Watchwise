@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_watched_set
 from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
 from recommender import get_recommendations, parse_rec_blocks
-import extra_streamlit_components as stx
+from streamlit_cookies_controller import CookieController
 from db import sign_in, sign_up, sign_out, load_profile, save_profile, set_profile_public, get_public_profile, search_profiles, get_session_from_tokens
 
 load_dotenv()
@@ -41,8 +41,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Cookie manager — must be instantiated before any other rendering
-cookie_manager = stx.CookieManager(key="ww_cookies")
+# Cookie controller — must be instantiated before any other rendering
+cookie_manager = CookieController()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CSS
@@ -266,6 +266,14 @@ div:has(> [data-testid="stButton"] button[kind="secondary"]#home_nav) button {
 
 hr { border-color: #1e1e26; }
 .stProgress > div > div { background: #d22323 !important; }
+
+/* ── Mobile ── */
+@media (max-width: 768px) {
+    /* Show only first 2 list pills */
+    .list-pill:nth-child(n+3) { display: none !important; }
+    /* Hide example query buttons */
+    .examples-block { display: none !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -310,16 +318,14 @@ for k, v in defaults.items():
 # ── Cookie helpers ────────────────────────────────────────────────────────────
 def save_auth_cookie(access_token: str, refresh_token: str, email: str):
     """Persist session tokens in browser cookies (30-day expiry)."""
-    import datetime
-    exp = datetime.datetime.now() + datetime.timedelta(days=30)
-    cookie_manager.set("ww_access_token",  access_token,  expires_at=exp)
-    cookie_manager.set("ww_refresh_token", refresh_token, expires_at=exp)
-    cookie_manager.set("ww_email",         email,         expires_at=exp)
+    cookie_manager.set("ww_access_token",  access_token,  max_age=30*24*3600)
+    cookie_manager.set("ww_refresh_token", refresh_token, max_age=30*24*3600)
+    cookie_manager.set("ww_email",         email,         max_age=30*24*3600)
 
 def clear_auth_cookie():
     for name in ("ww_access_token", "ww_refresh_token", "ww_email"):
         try:
-            cookie_manager.delete(name)
+            cookie_manager.remove(name)
         except Exception:
             pass
 
