@@ -726,10 +726,66 @@ if shared_slug:
 #  AUTH PANEL
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Auth panel (shown when Sign in is clicked) ────────────────────────────────
-if not user_email and st.session_state.auth_open:
+# ── Auth panel ────────────────────────────────────────────────────────────────
+# Show for: unauthenticated users who opened the panel (login/signup modes),
+# OR newly signed-up users who still need to upload their Letterboxd data.
+_auth_mode_now = st.session_state.auth_mode
+_needs_upload  = (
+    _auth_mode_now == "upload_required"
+    and st.session_state.user_email
+    and not st.session_state.zip_loaded
+)
+_show_auth = (not user_email and st.session_state.auth_open) or _needs_upload
+
+if _show_auth:
     _, mid, _ = st.columns([1, 1.4, 1])
     with mid:
+        mode = _auth_mode_now
+
+        if mode == "upload_required":
+            # ── Mandatory onboarding upload ──────────────────────────────────
+            # No close button — upload is required to use the app.
+            st.markdown('<p class="auth-title">One Last Step</p>', unsafe_allow_html=True)
+            st.markdown(
+                '<p class="auth-sub">Upload your Letterboxd export to finish creating your account. '
+                "This builds your taste profile — it's what makes Watchwise actually good.</p>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                "letterboxd.com → Settings → Import & Export → Export Your Data — "
+                "or go directly to [letterboxd.com/data/export/](https://letterboxd.com/data/export/)"
+            )
+            onboard_zip = st.file_uploader("ZIP", type=["zip"], label_visibility="collapsed", key="onboard_zip")
+            if st.button("⚙️  Build My Taste Profile", key="onboard_parse"):
+                if not onboard_zip:
+                    st.error("Please upload your Letterboxd ZIP first.")
+                else:
+                    success = parse_and_enrich_zip(onboard_zip)
+                    if success:
+                        _slug = st.session_state.profile_meta.get("username", "")
+                        try:
+                            save_profile(
+                                email=st.session_state.user_email,
+                                username=_slug,
+                                taste_profile=st.session_state.taste_profile,
+                                enriched_films=st.session_state.enriched_films or [],
+                                imdb_summary=st.session_state.imdb_summary or "",
+                                profile_meta=st.session_state.profile_meta,
+                                is_public=True,
+                                slug=_slug,
+                            )
+                            st.session_state.profile_slug      = _slug
+                            st.session_state.profile_is_public = True
+                            st.session_state.unsaved           = False
+                        except Exception:
+                            st.session_state.unsaved = True
+                        st.session_state.auth_open = False
+                        st.session_state.auth_mode = "login"
+                        st.rerun()
+            # Block the rest of the app until the upload is complete
+            st.stop()
+
+        # For login/signup modes, show the close button
         _, xcol = st.columns([5, 1])
         with xcol:
             st.markdown('<div class="ghost-btn">', unsafe_allow_html=True)
@@ -737,8 +793,6 @@ if not user_email and st.session_state.auth_open:
                 st.session_state.auth_open = False
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
-
-        mode = st.session_state.auth_mode
 
         if mode == "login":
             st.markdown('<p class="auth-title">Sign In</p>', unsafe_allow_html=True)
@@ -778,6 +832,10 @@ if not user_email and st.session_state.auth_open:
 
         else:  # signup
             st.markdown('<p class="auth-title">Create Account</p>', unsafe_allow_html=True)
+            st.markdown(
+                "<p class=\"auth-sub\">Free forever. You'll upload your Letterboxd data in the next step.</p>",
+                unsafe_allow_html=True,
+            )
 
             email     = st.text_input("Email", key="signup_email")
             password  = st.text_input("Password", type="password", key="signup_password", help="At least 6 characters.")
@@ -794,54 +852,22 @@ if not user_email and st.session_state.auth_open:
                     if result["error"]:
                         st.error(result["error"])
                     else:
-                        st.session_state.user_email = result["user"].email
+                        st.session_state.user_email             = result["user"].email
                         st.session_state.profile_loaded_from_db = True
-                        st.session_state.auth_mode  = "upload_required"
+                        st.session_state.auth_open              = True   # keep panel open
+                        st.session_state.auth_mode              = "upload_required"
                         if result.get("session"):
-                            save_auth_cookie(result["session"].access_token, result["session"].refresh_token, result["user"].email)
+                            save_auth_cookie(
+                                result["session"].access_token,
+                                result["session"].refresh_token,
+                                result["user"].email,
+                            )
                         st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
             st.markdown('<div class="ghost-btn" style="max-width:420px;margin:0.5rem auto">', unsafe_allow_html=True)
             if st.button("← Back to Sign In", key="switch_to_login"):
                 st.session_state.auth_mode = "login"
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
-
-        if mode == "upload_required":
-            st.markdown('<p class="auth-title">One Last Step</p>', unsafe_allow_html=True)
-            st.markdown(
-                '<p class="auth-sub">Upload your Letterboxd export to build your taste profile. '
-                'This is what makes Watchwise actually good.</p>',
-                unsafe_allow_html=True,
-            )
-            st.caption("letterboxd.com → Settings → Import & Export → Export Your Data — or go directly to [letterboxd.com/data/export/](https://letterboxd.com/data/export/)")
-            onboard_zip = st.file_uploader("ZIP", type=["zip"], label_visibility="collapsed", key="onboard_zip")
-            if st.button("⚙️  Build My Taste Profile", key="onboard_parse"):
-                if not onboard_zip:
-                    st.error("Please upload your Letterboxd ZIP first.")
-                else:
-                    success = parse_and_enrich_zip(onboard_zip)
-                    if success:
-                        _slug = st.session_state.profile_meta.get("username", "")
-                        try:
-                            save_profile(
-                                email=st.session_state.user_email,
-                                username=_slug,
-                                taste_profile=st.session_state.taste_profile,
-                                enriched_films=st.session_state.enriched_films or [],
-                                imdb_summary=st.session_state.imdb_summary or "",
-                                profile_meta=st.session_state.profile_meta,
-                                is_public=True,
-                                slug=_slug,
-                            )
-                            st.session_state.profile_slug      = _slug
-                            st.session_state.profile_is_public = True
-                            st.session_state.unsaved           = False
-                        except Exception:
-                            st.session_state.unsaved = True
-                        st.session_state.auth_open = False
-                        st.session_state.auth_mode = "login"
-                        st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  UPLOAD / PROFILE
