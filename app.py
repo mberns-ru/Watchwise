@@ -884,7 +884,27 @@ if not st.session_state.zip_loaded:
         else:
             success = parse_and_enrich_zip(uploaded_zip)
             if success:
-                st.session_state.unsaved = True
+                if user_email:
+                    # Auto-save immediately — no manual "Save to Profile" step needed
+                    _slug = st.session_state.profile_meta.get("username", "")
+                    try:
+                        save_profile(
+                            email=user_email,
+                            username=_slug,
+                            taste_profile=st.session_state.taste_profile,
+                            enriched_films=st.session_state.enriched_films or [],
+                            imdb_summary=st.session_state.imdb_summary or "",
+                            profile_meta=st.session_state.profile_meta,
+                            is_public=True,
+                            slug=_slug,
+                        )
+                        st.session_state.profile_slug      = _slug
+                        st.session_state.profile_is_public = True
+                        st.session_state.unsaved           = False
+                    except Exception:
+                        st.session_state.unsaved = True
+                else:
+                    st.session_state.unsaved = True
                 st.rerun()
 
 else:
