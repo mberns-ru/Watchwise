@@ -29,7 +29,15 @@ def parse_rec_blocks(text: str) -> tuple[list[dict], str]:
         title            = re.sub(r'\s*\(\d{4}\)', '', title_part).strip()
         num_match        = re.match(r'^(\d+)', block)
         number           = int(num_match.group(1)) if num_match else len(blocks) + 1
-        blocks.append({"number": number, "title": title, "year": year, "body": block})
+        # Detect community pick — Gemini was told to tag it with this string
+        is_community     = ("👥" in block) or ("loved by similar watchwise users" in block.lower())
+        blocks.append({
+            "number":       number,
+            "title":        title,
+            "year":         year,
+            "body":         block,
+            "is_community": is_community,
+        })
 
     if blocks:
         last = blocks[-1]
@@ -44,6 +52,13 @@ def parse_rec_blocks(text: str) -> tuple[list[dict], str]:
     return blocks, taste_note
 
 
+COMMUNITY_PICK_RULE = """
+COMMUNITY PICK RULE:
+- If a "FILMS LOVED BY SIMILAR WATCHWISE USERS" section is provided, scan it against the current query's genre, mood, and constraints (runtime, language, era, etc.).
+- If ONE of those films genuinely fits the query, include it among the 5 recommendations and mark it with `👥 _Loved by similar Watchwise users_` on the line immediately after its title line.
+- If NONE of the community candidates fit the query well, skip this rule entirely — recommend all 5 from your own knowledge. Do not force a poor fit.
+- Never include the same community film twice across consecutive turns if the query has changed significantly.
+"""
 GEMINI_MODEL = "gemini-2.5-flash"
 MAX_RETRIES  = 2
 
@@ -64,7 +79,7 @@ Rules:
 - Prefer hidden gems and niche picks over obvious blockbusters when the profile suggests a cinephile.
 - Format output as a clean numbered list.
 - End with a short "Taste note:" paragraph (2-3 sentences) explaining what you inferred about the user's style.
-
+""" + COMMUNITY_PICK_RULE + """
 If no taste profile is provided, make strong general recommendations with brief justifications.
 """
 
@@ -84,7 +99,127 @@ Rules:
 - Look for genuine overlap: shared high ratings, complementary taste signals, list names that suggest common ground.
 - Format output as a clean numbered list.
 - End with a short "Taste note:" paragraph noting the interesting overlaps (and tensions) between their two profiles.
-"""
+""" + COMMUNITY_PICK_RULE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Similar-Watchwise-users helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def find_similar_users_films(
+    my_enriched_films: list[dict] | None,
+    all_profiles: list[dict] | None,
+    watched_set: set[str] | None = None,
+    top_users_n: int = 5,
+    top_films_n: int = 12,
+    min_rating: float = 4.0,
+) -> list[dict]:
+    """
+    Find candidate films loved by similar Watchwise users.
+
+    Similarity = number of overlapping high-rated titles (≥min_rating★),
+    broken by Jaccard index. Returns a ranked list of candidate films
+    the current user has NOT seen:
+        [{"title", "year", "liked_by": [usernames], "ratings": [floats]}, ...]
+    """
+    if not my_enriched_films or not all_profiles:
+        return []
+
+    def _high_rated(films: list[dict]) -> dict[str, dict]:
+        out = {}
+        for f in films or []:
+            try:
+                r = float(f.get("rating") or 0)
+            except (TypeError, ValueError):
+                r = 0.0
+            t = (f.get("title") or "").lower().strip()
+            if r >= min_rating and t:
+                out[t] = f
+        return out
+
+    my_high = _high_rated(my_enriched_films)
+    if not my_high:
+        return []
+    my_high_set = set(my_high.keys())
+
+    # Score every other user by overlap
+    scored = []
+    for prof in all_profiles:
+        their_high = _high_rated(prof.get("enriched_films") or [])
+        if not their_high:
+            continue
+        their_set = set(their_high.keys())
+        overlap = my_high_set & their_set
+        if not overlap:
+            continue
+        union = my_high_set | their_set
+        jaccard = len(overlap) / len(union) if union else 0.0
+        scored.append({
+            "username":    prof.get("username") or prof.get("slug") or "",
+            "slug":        prof.get("slug") or "",
+            "overlap_n":   len(overlap),
+            "jaccard":     jaccard,
+            "their_high":  their_high,
+        })
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda x: (x["overlap_n"], x["jaccard"]), reverse=True)
+    top_users = scored[:top_users_n]
+
+    watched = watched_set or set()
+    candidates: dict[str, dict] = {}
+
+    for user in top_users:
+        for title_l, film in user["their_high"].items():
+            # Skip anything I've already seen or rated highly myself
+            if title_l in my_high_set or title_l in watched:
+                continue
+            if title_l not in candidates:
+                candidates[title_l] = {
+                    "title":    film.get("title", ""),
+                    "year":     film.get("year", ""),
+                    "liked_by": [],
+                    "ratings":  [],
+                }
+            candidates[title_l]["liked_by"].append(user["username"])
+            try:
+                candidates[title_l]["ratings"].append(float(film.get("rating") or 0))
+            except (TypeError, ValueError):
+                pass
+
+    # Rank: films liked by more similar users float to the top,
+    # then by average rating.
+    ranked = sorted(
+        candidates.values(),
+        key=lambda c: (
+            len(c["liked_by"]),
+            sum(c["ratings"]) / len(c["ratings"]) if c["ratings"] else 0.0,
+        ),
+        reverse=True,
+    )
+    return ranked[:top_films_n]
+
+
+def build_similar_users_block(candidates: list[dict]) -> str:
+    """Format similar-user film candidates for injection into the LLM prompt."""
+    if not candidates:
+        return ""
+    lines = [
+        "=== FILMS LOVED BY SIMILAR WATCHWISE USERS ===",
+        "These films are highly rated (≥4★) by other Watchwise users whose "
+        "taste profiles overlap with this user's, and that this user has NOT seen. "
+        "You MUST pick exactly one of these to include among the 5 recommendations:",
+    ]
+    for c in candidates:
+        liked = ", ".join(f"@{u}" for u in c["liked_by"][:3] if u)
+        if len(c["liked_by"]) > 3:
+            liked += f" (+{len(c['liked_by']) - 3} more)"
+        avg = sum(c["ratings"]) / len(c["ratings"]) if c["ratings"] else 0.0
+        yr  = f" ({c['year']})" if c.get("year") else ""
+        lines.append(f"  • {c['title']}{yr} — liked by {liked} · avg ★{avg:.1f}")
+    return "\n".join(lines)
 
 
 def _extract_titles(text: str) -> list[str]:
@@ -125,6 +260,7 @@ def get_recommendations(
     watched_set: set[str] | None = None,
     conversation_history: list[dict] | None = None,
     friend_taste_profile: str | None = None,
+    similar_users_block: str | None = None,
     api_key: str = "",
 ) -> tuple[str, list[str]]:
     """
@@ -133,6 +269,11 @@ def get_recommendations(
     conversation_history is a list of:
       {"role": "user" | "assistant", "content": str}
     representing prior exchanges in the session (NOT including the current query).
+
+    similar_users_block is a pre-formatted context block (from
+    build_similar_users_block) containing films loved by users with overlapping
+    taste. When provided, the system prompt instructs Gemini to include exactly
+    one of those films among the 5 picks and tag it.
 
     Returns (final_text, replaced_titles).
     """
@@ -153,6 +294,8 @@ def get_recommendations(
         context_parts.append(taste_profile)
     if imdb_summary:
         context_parts.append(imdb_summary)
+    if similar_users_block:
+        context_parts.append(similar_users_block)
     context = "\n\n".join(context_parts)
 
     if conversation_history:

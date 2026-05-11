@@ -148,6 +148,47 @@ def get_public_profile(slug: str) -> dict | None:
     return None
 
 
+def get_profiles_for_similarity(exclude_slug: str | None = None,
+                                limit: int = 200) -> list[dict]:
+    """
+    Pull lightweight public-profile data used for similarity matching.
+    Does NOT select user_email — avoids Supabase RLS issues.
+    Exclusion is done by slug (the current user's Letterboxd username).
+    Returns one dict per other public user with: slug, username, enriched_films (parsed).
+    """
+    client = get_client()
+    try:
+        res = (
+            client.table("profiles")
+            .select("username, slug, enriched_films")
+            .eq("is_public", True)
+            .limit(limit)
+            .execute()
+        )
+        out = []
+        for row in (res.data or []):
+            # Skip self by slug
+            row_slug = (row.get("slug") or "").lower()
+            if exclude_slug and row_slug == exclude_slug.lower():
+                continue
+            ef = row.get("enriched_films")
+            if isinstance(ef, str):
+                try:
+                    ef = json.loads(ef)
+                except Exception:
+                    ef = []
+            if not ef:
+                continue
+            out.append({
+                "slug":           row.get("slug"),
+                "username":       row.get("username") or row.get("slug") or "",
+                "enriched_films": ef,
+            })
+        return out
+    except Exception:
+        return []
+
+
 def search_profiles(query: str, limit: int = 8) -> list[dict]:
     """Search public profiles by username/slug prefix."""
     if not query or not query.strip():
