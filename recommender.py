@@ -68,16 +68,17 @@ Your task: Given a user's Letterboxd taste profile and optional TMDB metadata an
 
 Rules:
 - Recommend exactly 5 films unless the user asks for more or fewer.
-- For each film provide:
-    • **Title (Year)** — Director
-    • Genre | Runtime | Language/Country
-    • One sentence on why it matches the QUERY.
-    • One sentence connecting it to THIS USER'S specific taste (reference their actual ratings, lists, or reviews).
+- For each film use this EXACT format (the number MUST come first, outside any bold markers):
+
+    N. **Title (Year)** — Director
+    - 🎬 Genre | Runtime | Language / Country
+    - 🔍 One sentence on why it matches the query (no label prefix).
+    - 💡 One sentence on why it suits this user's taste, referencing their actual ratings, lists, or reviews (no label prefix).
+
 - Do NOT recommend any film the user has already seen (the ALREADY SEEN list is provided).
 - AVOID genres, styles, and directors associated with the user's HATED or DISLIKED films.
 - In conversation mode: if the user says "more like #3" or "make them more obscure", adjust accordingly while keeping the taste profile in mind.
 - Prefer hidden gems and niche picks over obvious blockbusters when the profile suggests a cinephile.
-- Format output as a clean numbered list.
 - End with a short "Taste note:" paragraph (2-3 sentences) explaining what you inferred about the user's style.
 """ + COMMUNITY_PICK_RULE + """
 If no taste profile is provided, make strong general recommendations with brief justifications.
@@ -89,11 +90,12 @@ Your task: Two users want to watch a movie TOGETHER. You have been given BOTH of
 
 Rules:
 - Recommend exactly 5 films unless asked otherwise.
-- For each film provide:
-    • **Title (Year)** — Director
-    • Genre | Runtime | Language/Country
-    • One sentence on why it matches the QUERY.
-    • One sentence explaining why it works for BOTH users — reference specific overlap in their tastes (shared genres, directors, ratings patterns).
+- For each film use this EXACT format (the number MUST come first, outside any bold markers):
+
+    N. **Title (Year)** — Director
+    - 🎬 Genre | Runtime | Language / Country
+    - 🔍 One sentence on why it matches the query (no label prefix).
+    - 💡 One sentence on the shared taste overlap, referencing specific ratings, lists, or genres (no label prefix).
 - Do NOT recommend any film either user has already seen.
 - Avoid genres or styles that either user has rated poorly.
 - Look for genuine overlap: shared high ratings, complementary taste signals, list names that suggest common ground.
@@ -110,9 +112,9 @@ def find_similar_users_films(
     my_enriched_films: list[dict] | None,
     all_profiles: list[dict] | None,
     watched_set: set[str] | None = None,
-    top_users_n: int = 5,
-    top_films_n: int = 12,
-    min_rating: float = 4.0,
+    top_users_n: int = 10,
+    top_films_n: int = 30,
+    min_rating: float = 3.5,
 ) -> list[dict]:
     """
     Find candidate films loved by similar Watchwise users.
@@ -142,7 +144,7 @@ def find_similar_users_films(
         return []
     my_high_set = set(my_high.keys())
 
-    # Score every other user by overlap
+    # Score every other user by overlap — use same threshold (3.5★)
     scored = []
     for prof in all_profiles:
         their_high = _high_rated(prof.get("enriched_films") or [])

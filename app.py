@@ -8,6 +8,7 @@ import re
 import time
 import random
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from letterboxd_parser import parse_letterboxd_zip, build_taste_profile, get_watched_set
 from tmdb_utils import build_enrichment_summary, fetch_film_metadata, fetch_poster_and_providers
@@ -143,6 +144,17 @@ h1,h2,h3,h4  { font-family: 'Bebas Neue', sans-serif; letter-spacing: 0.06em; }
 .ghost-btn .stButton > button:hover {
     color: #e8e2d8 !important; border-color: #555 !important;
     background: #1a1a20 !important;
+}
+/* Collapse the components.html iframe so it takes zero vertical space */
+iframe[title="components.v1.html"] {
+    display: block;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+div:has(> iframe[title="components.v1.html"]) {
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
 }
 
 /* Sign out as a text link */
@@ -315,6 +327,19 @@ div:has(> [data-testid="stButton"] button[kind="secondary"]#home_nav) button {
 .recs-empty-title { font-family:'Bebas Neue',sans-serif; font-size:2rem; color:#2a2a32; margin:0; }
 .recs-empty-sub   { font-size:0.82rem; color:#444; margin-top:6px; }
 
+/* Tooltip: black text on white background */
+div[data-testid="stTooltipContent"],
+div[role="tooltip"] {
+    background: #fff !important;
+    color: #111 !important;
+    border: 1px solid #ccc !important;
+    border-radius: 4px !important;
+}
+div[data-testid="stTooltipContent"] p,
+div[data-testid="stTooltipContent"] span,
+div[role="tooltip"] p,
+div[role="tooltip"] span { color: #111 !important; }
+
 hr { border-color: #1e1e26; }
 .stProgress > div > div { background: #d22323 !important; }
 
@@ -375,19 +400,6 @@ hr { border-color: #1e1e26; }
     text-transform: uppercase;
     margin: 0 0 3px 2px;
 }
-.chat-thread-wrap {
-    max-height: 340px;
-    overflow-y: auto;
-    padding-right: 6px;
-    margin-bottom: 0.8rem;
-}
-.chat-thread-wrap::-webkit-scrollbar { width: 4px; }
-.chat-thread-wrap::-webkit-scrollbar-track { background: transparent; }
-.chat-thread-wrap::-webkit-scrollbar-thumb {
-    background: #2c2c38;
-    border-radius: 2px;
-}
-.chat-thread-wrap::-webkit-scrollbar-thumb:hover { background: #d22323; }
 .chat-turn { margin-bottom: 0.6rem; }
 
 /* ── Previous picks compact list ── */
@@ -528,6 +540,8 @@ defaults = {
     "similar_users_debug":    None,   # diagnostic log dict
     # Poster / provider cache  {(title, year_or_None): {"poster_url":…, "providers":[…]}}
     "poster_cache":           {},
+    # Rewatch toggle
+    "allow_rewatches":        False,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -671,6 +685,59 @@ def extract_synopsis(body: str) -> str:
     return ""
 
 
+def _parse_watched_from_taste_profile() -> set[str]:
+    """Parse the ALREADY SEEN block from taste_profile as a fallback
+    when parsed_data is not available (i.e. profile loaded from DB)."""
+    tp = st.session_state.taste_profile or ""
+    marker = "=== ALREADY SEEN"
+    idx = tp.find(marker)
+    if idx == -1:
+        return set()
+    lines = tp[idx:].split("\n", 1)
+    if len(lines) < 2:
+        return set()
+    watched: set[str] = set()
+    for entry in lines[1].strip().split(","):
+        title = re.sub(r'\s*\(\d{4}\)\s*$', '', entry.strip()).strip().lower()
+        if title:
+            watched.add(title)
+    return watched
+
+
+def get_full_watched_set() -> set[str]:
+    """Always return the complete watched-title set — used for badge display.
+    Never returns None; toggle state is irrelevant here."""
+    if st.session_state.parsed_data:
+        return get_watched_set(st.session_state.parsed_data)
+    return _parse_watched_from_taste_profile()
+
+
+def get_effective_watched_set() -> set[str] | None:
+    """Return watched-title set for passing to get_recommendations (Gemini exclusion).
+    Returns None when allow_rewatches is on so Gemini can suggest seen films."""
+    if st.session_state.allow_rewatches:
+        return None
+    if st.session_state.parsed_data:
+        return get_watched_set(st.session_state.parsed_data)
+    ws = _parse_watched_from_taste_profile()
+    return ws if ws else None
+
+
+def effective_taste_profile() -> str | None:
+    """Return the taste profile, stripping the ALREADY SEEN exclusion block
+    when 'Allow rewatches' is on so Gemini can suggest previously watched films."""
+    tp = st.session_state.taste_profile
+    if not tp:
+        return tp
+    if st.session_state.allow_rewatches:
+        # Strip everything from the exclusion header onward
+        marker = "=== ALREADY SEEN"
+        idx = tp.find(marker)
+        if idx != -1:
+            tp = tp[:idx].rstrip()
+    return tp
+
+
 def get_cached_poster(title: str, year: str | None):
     """Fetch poster + providers, caching results in session_state to avoid
     re-hitting TMDB on every rerun of the chat thread."""
@@ -744,8 +811,9 @@ def get_similar_users_block_cached() -> str | None:
         st.session_state.similar_users_films = []
         return None
 
-    watched = get_watched_set(st.session_state.parsed_data) \
-        if st.session_state.parsed_data else None
+    watched = get_effective_watched_set()
+    log(f"Rewatch mode: {'ON' if st.session_state.allow_rewatches else 'OFF'} — "
+        f"{'not filtering' if st.session_state.allow_rewatches else f'{len(watched or set())} films excluded'}")
 
     candidates = find_similar_users_films(
         my_enriched_films=enriched,
@@ -830,12 +898,11 @@ def parse_and_enrich_zip(uploaded_zip):
 def run_recommendations(query: str, loader_slot, friend_taste_profile: str | None = None):
     loader_slot.markdown(loader_html(), unsafe_allow_html=True)
     try:
-        watched_set = get_watched_set(st.session_state.parsed_data) \
-            if st.session_state.parsed_data else None
+        watched_set = get_effective_watched_set()
         sim_block = get_similar_users_block_cached()
         recs, replaced = get_recommendations(
             query=query.strip(),
-            taste_profile=st.session_state.taste_profile,
+            taste_profile=effective_taste_profile(),
             imdb_summary=st.session_state.imdb_summary,
             watched_set=watched_set,
             conversation_history=st.session_state.get("chat_history") or None,
@@ -1066,11 +1133,25 @@ if shared_slug:
                 except Exception:
                     poster_url = None
                     providers  = []
+
                 col_img, col_text = st.columns([1, 4], gap="medium")
                 with col_img:
                     if poster_url:
+                        tr = result.get("tmdb_rating")
+                        if tr:
+                            colour = "#21d07a" if tr >= 7.0 else "#d2a823" if tr >= 5.0 else "#d22323"
+                            rating_badge = (
+                                f'<div style="position:absolute;top:6px;left:6px;'
+                                f'background:{colour};color:#fff;font-family:\'Bebas Neue\',sans-serif;'
+                                f'font-size:0.78rem;letter-spacing:0.06em;padding:2px 7px;'
+                                f'border-radius:3px;line-height:1.4">⭐ {tr}</div>'
+                            )
+                        else:
+                            rating_badge = ""
                         st.markdown(
-                            f'<img src="{poster_url}" style="width:100%;border-radius:4px;">',
+                            f'<div style="position:relative">'
+                            f'<img src="{poster_url}" style="width:100%;border-radius:4px;">'
+                            f'{rating_badge}</div>',
                             unsafe_allow_html=True,
                         )
                     else:
@@ -1149,7 +1230,7 @@ if _show_auth:
                             save_profile(
                                 email=st.session_state.user_email,
                                 username=_slug,
-                                taste_profile=st.session_state.taste_profile,
+                                taste_profile=effective_taste_profile(),
                                 enriched_films=st.session_state.enriched_films or [],
                                 imdb_summary=st.session_state.imdb_summary or "",
                                 profile_meta=st.session_state.profile_meta,
@@ -1198,7 +1279,7 @@ if _show_auth:
                                 save_profile(
                                     email=result["user"].email,
                                     username=st.session_state.profile_meta.get("username", ""),
-                                    taste_profile=st.session_state.taste_profile,
+                                    taste_profile=effective_taste_profile(),
                                     enriched_films=st.session_state.enriched_films or [],
                                     imdb_summary=st.session_state.imdb_summary or "",
                                     profile_meta=st.session_state.profile_meta,
@@ -1273,7 +1354,7 @@ if not st.session_state.zip_loaded:
                         save_profile(
                             email=user_email,
                             username=_slug,
-                            taste_profile=st.session_state.taste_profile,
+                            taste_profile=effective_taste_profile(),
                             enriched_films=st.session_state.enriched_films or [],
                             imdb_summary=st.session_state.imdb_summary or "",
                             profile_meta=st.session_state.profile_meta,
@@ -1345,7 +1426,7 @@ else:
                     save_profile(
                         email=user_email,
                         username=st.session_state.profile_meta.get("username", ""),
-                        taste_profile=st.session_state.taste_profile,
+                        taste_profile=effective_taste_profile(),
                         enriched_films=st.session_state.enriched_films or [],
                         imdb_summary=st.session_state.imdb_summary or "",
                         profile_meta=st.session_state.profile_meta,
@@ -1415,24 +1496,22 @@ if st.session_state.loading:
 
         if prior_turns:
             st.markdown('<p class="label" style="font-size:0.75rem">Conversation</p>', unsafe_allow_html=True)
-            _html = ['<div class="chat-thread-wrap">']
-            for u, a in prior_turns:
-                _html.append('<div class="chat-turn">')
-                _html.append(
-                    f'<p class="user-bubble-label">You</p>'
-                    f'<div style="display:flex;justify-content:flex-end">'
-                    f'<div class="user-bubble">{u}</div></div>'
-                )
-                _, _tn = parse_rec_blocks(a)
-                if _tn:
-                    _note = re.sub(r'^taste note:\s*', '', _tn, flags=re.IGNORECASE)
-                    _html.append(
-                        f'<p class="agent-bubble-label">Watchwise</p>'
-                        f'<div class="agent-bubble">{_note}</div>'
+            with st.container(height=340, border=False):
+                for u, a in prior_turns:
+                    st.markdown(
+                        f'<p class="user-bubble-label">You</p>'
+                        f'<div style="display:flex;justify-content:flex-end">'
+                        f'<div class="user-bubble">{u}</div></div>',
+                        unsafe_allow_html=True,
                     )
-                _html.append('</div>')
-            _html.append('</div>')
-            st.markdown(''.join(_html), unsafe_allow_html=True)
+                    _, _tn = parse_rec_blocks(a)
+                    if _tn:
+                        _note = re.sub(r'^taste note:\s*', '', _tn, flags=re.IGNORECASE)
+                        st.markdown(
+                            f'<p class="agent-bubble-label">Watchwise</p>'
+                            f'<div class="agent-bubble">{_note}</div>',
+                            unsafe_allow_html=True,
+                        )
             st.markdown("<hr style='border-color:#1e1e26;margin:0.5rem 0'>", unsafe_allow_html=True)
 
         # Show the pending query as an in-flight user bubble
@@ -1460,12 +1539,11 @@ if st.session_state.loading:
         friend_tp = (st.session_state.friend_profile or {}).get("taste_profile") \
             if st.session_state.watch_together else None
         try:
-            watched_set = get_watched_set(st.session_state.parsed_data) \
-                if st.session_state.parsed_data else None
+            watched_set = get_effective_watched_set()
             sim_block = get_similar_users_block_cached()
             recs, replaced = get_recommendations(
                 query=query_to_run,
-                taste_profile=st.session_state.taste_profile,
+                taste_profile=effective_taste_profile(),
                 imdb_summary=st.session_state.imdb_summary,
                 watched_set=watched_set,
                 conversation_history=st.session_state.get("chat_history") or None,
@@ -1514,27 +1592,25 @@ else:
         # ── Chat thread (above input) ────────────────────────────────────────
         if turns:
             st.markdown('<p class="label" style="font-size:0.75rem">Conversation</p>', unsafe_allow_html=True)
-            # Build entire thread as one HTML string so CSS overflow works correctly.
-            # Splitting across st.markdown() calls breaks DOM nesting.
-            html = ['<div class="chat-thread-wrap">']
-            for user_text, assistant_text in turns:
-                html.append('<div class="chat-turn">')
-                html.append(
-                    f'<p class="user-bubble-label">You</p>'
-                    f'<div style="display:flex;justify-content:flex-end">'
-                    f'<div class="user-bubble">{user_text}</div></div>'
-                )
-                _, tn = parse_rec_blocks(assistant_text)
-                if tn:
-                    note = re.sub(r'^taste note:\s*', '', tn, flags=re.IGNORECASE)
-                    html.append(
-                        f'<p class="agent-bubble-label">Watchwise</p>'
-                        f'<div class="agent-bubble">{note}</div>'
+            with st.container(height=340, border=False):
+                for user_text, assistant_text in turns:
+                    # User bubble (right-aligned)
+                    st.markdown(
+                        f'<p class="user-bubble-label">You</p>'
+                        f'<div style="display:flex;justify-content:flex-end">'
+                        f'<div class="user-bubble">{user_text}</div></div>',
+                        unsafe_allow_html=True,
                     )
-                html.append('</div>')
-            html.append('</div>')
-            st.markdown(''.join(html), unsafe_allow_html=True)
-            st.markdown("<hr style='border-color:#1e1e26;margin:0.6rem 0'>", unsafe_allow_html=True)
+                    # Agent bubble
+                    _, tn = parse_rec_blocks(assistant_text)
+                    if tn:
+                        note = re.sub(r'^taste note:\s*', '', tn, flags=re.IGNORECASE)
+                        st.markdown(
+                            f'<p class="agent-bubble-label">Watchwise</p>'
+                            f'<div class="agent-bubble">{note}</div>',
+                            unsafe_allow_html=True,
+                        )
+            st.markdown("<hr style='border-color:#1e1e26;margin:0.3rem 0 0.5rem'>", unsafe_allow_html=True)
 
         # ── Input area ────────────────────────────────────────────────────────
         if in_convo:
@@ -1562,42 +1638,48 @@ else:
         )
 
         if in_convo:
-            ecol1, ecol2 = st.columns([2, 1])
+            ecol1, ecol2 = st.columns([1, 1])
             with ecol1:
+                if st.button("✕  New chat", key="start_over"):
+                    st.session_state.recommendations = None
+                    st.session_state.replaced        = []
+                    st.session_state["chat_history"] = []
+                    st.rerun()
+            with ecol2:
                 if st.button("➤  Send", key="enter_followup"):
                     if query.strip():
                         st.session_state.pending_query = query.strip()
                         st.session_state.loading       = True
                         st.session_state.do_api        = False
                         st.rerun()
-            with ecol2:
-                if st.button("✕  New chat", key="start_over"):
-                    st.session_state.recommendations = None
-                    st.session_state.replaced        = []
-                    st.session_state["chat_history"] = []
-                    st.rerun()
         else:
-            go = st.button("🎬  Get Recommendations", key="get_recs")
-            if go and query.strip():
-                st.session_state.pending_query = query.strip()
-                st.session_state.loading       = True
-                st.session_state.do_api        = False
-                st.rerun()
+            if st.button("🎬  Get Recommendations", key="get_recs"):
+                if query.strip():
+                    st.session_state.pending_query = query.strip()
+                    st.session_state.loading       = True
+                    st.session_state.do_api        = False
+                    st.rerun()
 
-        # Quick examples — only when no conversation yet
+        # ── Rewatch toggle — full width below buttons ─────────────────────────
+        st.session_state.allow_rewatches = st.toggle(
+            "Allow rewatches",
+            value=st.session_state.allow_rewatches,
+            help="When off, Watchwise skips films you've already seen. Toggle on to revisit old favourites.",
+        )
+
         if not in_convo:
             st.markdown("<hr style='border-color:#1e1e26;margin:0.8rem 0'>", unsafe_allow_html=True)
-            st.markdown('<p class="label" style="font-size:0.75rem">Quick examples</p>', unsafe_allow_html=True)
-            cols = st.columns(2)
-            for idx, ex in enumerate(EXAMPLES):
-                with cols[idx % 2]:
-                    st.markdown('<div class="example-btn">', unsafe_allow_html=True)
-                    if st.button(ex, key=f"ex__{ex}"):
-                        st.session_state.pending_query = ex
-                        st.session_state.loading       = True
-                        st.session_state.do_api        = False
-                        st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
+            with st.expander("💡 Quick examples", expanded=True):
+                cols = st.columns(2)
+                for idx, ex in enumerate(EXAMPLES):
+                    with cols[idx % 2]:
+                        st.markdown('<div class="example-btn">', unsafe_allow_html=True)
+                        if st.button(ex, key=f"ex__{ex}"):
+                            st.session_state.pending_query = ex
+                            st.session_state.loading       = True
+                            st.session_state.do_api        = False
+                            st.rerun()
+                        st.markdown('</div>', unsafe_allow_html=True)
 
     # ── RIGHT COLUMN ─────────────────────────────────────────────────────────
     with right:
@@ -1622,13 +1704,6 @@ else:
                 poster_url   = result.get("poster_url")
                 providers    = result.get("providers") or []
                 is_community = block.get("is_community", False)
-
-                if is_community:
-                    st.markdown('<div class="community-pick">', unsafe_allow_html=True)
-                    st.markdown(
-                        '<span class="community-pick-badge">👥 COMMUNITY PICK</span>',
-                        unsafe_allow_html=True,
-                    )
 
                 col_img, col_text = st.columns([1, 4], gap="medium")
                 with col_img:
@@ -1658,15 +1733,44 @@ else:
                             unsafe_allow_html=True,
                         )
                 with col_text:
+                    # ── Badges ABOVE summary ──────────────────────────────────
+                    badges_html = ""
+                    tr = result.get("tmdb_rating")
+                    if tr:
+                        colour = "#21d07a" if tr >= 7.0 else "#d2a823" if tr >= 5.0 else "#d22323"
+                        badges_html += (
+                            f'<span style="display:inline-block;background:{colour};color:#fff;'
+                            f'font-family:\'Bebas Neue\',sans-serif;font-size:0.72rem;'
+                            f'letter-spacing:0.06em;padding:2px 8px;border-radius:3px;margin-right:5px">'
+                            f'⭐ {tr} TMDB</span>'
+                        )
+                    if is_community:
+                        badges_html += (
+                            '<span style="display:inline-block;background:#d22323;color:#fff;'
+                            'font-family:\'Bebas Neue\',sans-serif;font-size:0.72rem;'
+                            'letter-spacing:0.06em;padding:2px 8px;border-radius:3px;margin-right:5px">'
+                            '👥 COMMUNITY PICK</span>'
+                        )
+                    # REWATCH badge — always show when film is in watch history, toggle-independent
+                    _full_ws = get_full_watched_set()
+                    if _full_ws and block["title"].lower() in _full_ws:
+                        badges_html += (
+                            '<span style="display:inline-block;background:#2a2a3a;color:#aaa;'
+                            'font-family:\'Bebas Neue\',sans-serif;font-size:0.72rem;'
+                            'letter-spacing:0.06em;padding:2px 8px;border-radius:3px;'
+                            'border:1px solid #3a3a4a">↩ REWATCH</span>'
+                        )
+                    if badges_html:
+                        st.markdown(
+                            f'<div style="margin-bottom:6px">{badges_html}</div>',
+                            unsafe_allow_html=True,
+                        )
                     st.markdown(block["body"])
 
                 if is_community:
-                    st.markdown('</div>', unsafe_allow_html=True)
+                    st.markdown("<hr style='border-color:#d22323;margin:0.4rem 0;opacity:0.3'>", unsafe_allow_html=True)
                 else:
-                    st.markdown(
-                        "<hr style='border-color:#1e1e26;margin:0.4rem 0'>",
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown("<hr style='border-color:#1e1e26;margin:0.4rem 0'>", unsafe_allow_html=True)
 
             if st.session_state.get("replaced"):
                 replaced_str = ", ".join(t.title() for t in st.session_state.replaced)
@@ -1690,6 +1794,7 @@ else:
                     for pb in pblocks:
                         pr = get_cached_poster(pb["title"], pb["year"])
                         pproviders = pr.get("providers") or []
+                        pt_rating  = pr.get("tmdb_rating")
                         synopsis   = extract_synopsis(pb["body"])
                         is_comm    = pb.get("is_community", False)
 
@@ -1709,13 +1814,14 @@ else:
                             if is_comm else ""
                         )
                         year_str = f" ({pb['year']})" if pb.get("year") else ""
+                        tmdb_str = f" · ⭐ {pt_rating}" if pt_rating else ""
 
                         html_rows.append(
                             f'<div class="compact-rec">'
                             f'  <span class="compact-rec-bullet">▸</span>'
                             f'  <div class="compact-rec-body">'
                             f'    <span class="compact-rec-title">{pb["title"]}</span>'
-                            f'    <span class="compact-rec-meta">{year_str}</span>'
+                            f'    <span class="compact-rec-meta">{year_str}{tmdb_str}</span>'
                             f'    {provider_span}{community_badge}'
                             f'    {"<div class=\"compact-rec-synopsis\">" + synopsis + "</div>" if synopsis else ""}'
                             f'  </div>'
@@ -1723,9 +1829,73 @@ else:
                         )
 
                     st.markdown("".join(html_rows), unsafe_allow_html=True)
-if st.session_state.taste_profile:
-    with st.expander("📄 View taste profile sent to Gemini"):
-        st.code(st.session_state.taste_profile, language=None)
-if st.session_state.imdb_summary:
-    with st.expander("🎞️ TMDB metadata summary"):
-        st.code(st.session_state.imdb_summary, language=None)
+
+# ── JS: button styling + Enter-to-send + auto-scroll ─────────────────────────
+# Injected at top level, outside all columns, so the iframe doesn't break layout.
+components.html("""
+<script>
+(function() {
+  var doc = window.parent.document;
+
+  // ── Color "New chat" button dark red (no wrapper div needed) ────────────
+  function styleButtons() {
+    doc.querySelectorAll('button').forEach(function(b) {
+      var t = b.innerText || '';
+      if (t.includes('New chat')) {
+        b.style.setProperty('background', '#6b1010', 'important');
+        b.onmouseenter = function() { this.style.setProperty('background', '#4a0b0b', 'important'); };
+        b.onmouseleave = function() { this.style.setProperty('background', '#6b1010', 'important'); };
+      }
+    });
+  }
+
+  // ── Enter-to-send ────────────────────────────────────────────────────────
+  function attachEnter() {
+    var ta = doc.querySelector('textarea[aria-label="query"]');
+    if (!ta) { setTimeout(attachEnter, 400); return; }
+    if (ta._wwEnter) return;
+    ta._wwEnter = true;
+    ta.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        doc.querySelectorAll('button').forEach(function(b) {
+          var t = b.innerText || '';
+          if (t.includes('Send') || t.includes('Recommendations')) b.click();
+        });
+      }
+    });
+  }
+
+  // ── Scroll chat container to bottom ─────────────────────────────────────
+  // st.container(height=340) renders as stVerticalBlockBorderWrapper with
+  // inline style containing "overflow" and a fixed height.
+  function scrollChat() {
+    var scrolled = false;
+    doc.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]').forEach(function(el) {
+      var s = el.getAttribute('style') || '';
+      if (s.includes('overflow') && el.scrollHeight > el.clientHeight + 5) {
+        el.scrollTop = el.scrollHeight;
+        scrolled = true;
+      }
+    });
+    return scrolled;
+  }
+
+  // Use MutationObserver to scroll whenever the chat container's content changes
+  var observer = new MutationObserver(function() {
+    scrollChat();
+    styleButtons();
+  });
+  observer.observe(doc.body, { childList: true, subtree: true });
+
+  // Also run immediately with retries for the initial render
+  styleButtons();
+  var tries = 0;
+  (function retry() {
+    if (scrollChat() || tries++ > 20) return;
+    setTimeout(retry, 150);
+  })();
+  attachEnter();
+})();
+</script>
+""", height=0)

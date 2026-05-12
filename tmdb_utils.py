@@ -57,7 +57,19 @@ def fetch_poster_and_providers(
             pass
 
     providers = []
+    tmdb_rating = None
     if movie_id:
+        try:
+            detail = requests.get(
+                f"{TMDB_BASE}/movie/{movie_id}",
+                headers=h,
+                timeout=5,
+            ).json()
+            vote_avg = detail.get("vote_average")
+            if vote_avg:
+                tmdb_rating = round(float(vote_avg), 1)
+        except Exception:
+            pass
         try:
             wp = requests.get(
                 f"{TMDB_BASE}/movie/{movie_id}/watch/providers",
@@ -74,7 +86,7 @@ def fetch_poster_and_providers(
         except Exception:
             pass
 
-    return {"poster_url": poster_url, "providers": providers}
+    return {"poster_url": poster_url, "providers": providers, "tmdb_rating": tmdb_rating}
 
 
 # kept for backwards compat
