@@ -2,7 +2,7 @@
 
 Personalized, conversational movie recommendations grounded in your Letterboxd export, enriched with TMDB metadata, and powered by Google Gemini 2.5 Flash.
 
-**🔗 Live app:** [watchwise.streamlit.app](https://watchwise.streamlit.app)
+**🔗 Live app:** [watchwiseai.streamlit.app](https://watchwiseai.streamlit.app)
 
 ---
 
@@ -28,7 +28,7 @@ Example queries that work well:
 - **Community picks** — when other Watchwise users with overlapping taste have loved a film you haven't seen, the model can surface it as a tagged recommendation.
 - **Streaming availability** — each recommendation shows current streaming providers via TMDB.
 - **Persistent profile** — sign in once with email or Google; your taste profile is saved and loads on every visit.
-- **Public profile sharing** — share your taste profile at `watchwise.streamlit.app/?u=<your-username>`.
+- **Public profile sharing** — share your taste profile at `watchwiseai.streamlit.app/?u=<your-username>`.
 - **Rewatch toggle** — opt in to allow films you've already watched to be recommended again.
 
 ---
