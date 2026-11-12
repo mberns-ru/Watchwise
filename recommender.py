@@ -4,6 +4,7 @@ Calls the Google Gemini API to generate personalized movie recommendations.
 Supports single-turn and multi-turn (conversation) mode.
 """
 
+import os
 import re
 from google import genai
 from google.genai import types
@@ -59,7 +60,9 @@ COMMUNITY PICK RULE:
 - If NONE of the community candidates fit the query well, skip this rule entirely — recommend all 5 from your own knowledge. Do not force a poor fit.
 - Never include the same community film twice across consecutive turns if the query has changed significantly.
 """
-GEMINI_MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash was deprecated in late 2026 (restricted to prior users, shutdown Dec 1 2026).
+# Override with the GEMINI_MODEL env var / Streamlit secret without touching code.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 MAX_RETRIES  = 2
 
 SYSTEM_PROMPT = """You are Watchwise, an expert AI movie recommendation assistant with encyclopedic knowledge of world cinema.
